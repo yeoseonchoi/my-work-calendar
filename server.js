@@ -76,7 +76,7 @@ async function auth(req, res, next) {
 }
 async function startSession(res, userId) {
   const token = crypto.randomBytes(32).toString('hex');
-  (await db.prepare('INSERT INTO sessions (token, user_id) VALUES (?, ?)').run(token, userId));
+  await db.prepare('INSERT INTO sessions (token, user_id) VALUES (?, ?)').run(token, userId);
   res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}${SECURE_COOKIE}`);
 }
 
@@ -86,14 +86,14 @@ app.post('/api/register', async (req, res) => {
   if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: '이메일 형식이 올바르지 않습니다.' });
   if (password.length < 6) return res.status(400).json({ error: '비밀번호는 6자 이상이어야 합니다.' });
   if (process.env.JOIN_CODE && joinCode !== process.env.JOIN_CODE) return res.status(403).json({ error: '가입 코드가 올바르지 않습니다.' });
-  if ((await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email.toLowerCase()))) return res.status(409).json({ error: '이미 가입된 이메일입니다.' });
+  if (await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email.toLowerCase())) return res.status(409).json({ error: '이미 가입된 이메일입니다.' });
   const count = (await db.prepare('SELECT COUNT(*) AS n FROM users').get()).n;
   const org = cleanOrg(req.body);
-  const r = (await db
+  const r = await db
     .prepare('INSERT INTO users (email, name, pw_hash, role, color, site, dept, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(email.toLowerCase(), name.trim(), hashPw(password), count === 0 ? 'admin' : 'member', COLORS[count % COLORS.length], org.site, org.dept, org.position));
-  (await startSession(res, Number(r.lastInsertRowid)));
-  res.json(publicUser((await db.prepare('SELECT * FROM users WHERE id = ?').get(r.lastInsertRowid))));
+    .run(email.toLowerCase(), name.trim(), hashPw(password), count === 0 ? 'admin' : 'member', COLORS[count % COLORS.length], org.site, org.dept, org.position);
+  await startSession(res, Number(r.lastInsertRowid));
+  res.json(publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(r.lastInsertRowid)));
 });
 
 // 로그인 시도 제한: 같은 이메일로 15분 안에 8번 틀리거나, 같은 IP 에서 60번 틀리면 잠시 막는다 (비밀번호 무차별 대입 방지)
@@ -117,7 +117,7 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/logout', async (req, res) => {
   const token = getCookie(req, 'sid');
-  if (token) (await db.prepare('DELETE FROM sessions WHERE token = ?').run(token));
+  if (token) await db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
   res.setHeader('Set-Cookie', `sid=; HttpOnly; Path=/; Max-Age=0${SECURE_COOKIE}`);
   res.json({ ok: true });
 });
@@ -135,13 +135,13 @@ app.get('/api/users', auth, async (req, res) =>
 // 내 소속 정보 수정 / 관리자가 팀원 소속 정보 수정
 app.put('/api/me/profile', auth, async (req, res) => {
   const o = cleanOrg(req.body);
-  (await db.prepare('UPDATE users SET site = ?, dept = ?, position = ? WHERE id = ?').run(o.site, o.dept, o.position, req.user.id));
+  await db.prepare('UPDATE users SET site = ?, dept = ?, position = ? WHERE id = ?').run(o.site, o.dept, o.position, req.user.id);
   res.json({ ok: true });
 });
 app.put('/api/users/:id/profile', auth, async (req, res, next) => {
   if (req.user.role !== 'admin') return next(httpError(403, '관리자만 사용할 수 있습니다.'));
   const o = cleanOrg(req.body);
-  (await db.prepare('UPDATE users SET site = ?, dept = ?, position = ? WHERE id = ?').run(o.site, o.dept, o.position, req.params.id));
+  await db.prepare('UPDATE users SET site = ?, dept = ?, position = ? WHERE id = ?').run(o.site, o.dept, o.position, req.params.id);
   res.json({ ok: true });
 });
 const userNames = async () => new Map((await db.prepare('SELECT id, name FROM users').all()).map((u) => [u.id, u.name]));
@@ -154,24 +154,24 @@ app.post('/api/me/password', auth, async (req, res) => {
   const { current, password } = req.body || {};
   if (!checkPw(String(current || ''), req.user.pw_hash)) throw httpError(400, '현재 비밀번호가 올바르지 않습니다.');
   if (String(password || '').length < 6) throw httpError(400, '새 비밀번호는 6자 이상이어야 합니다.');
-  (await db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(hashPw(password), req.user.id));
-  (await db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?').run(req.user.id, getCookie(req, 'sid')));
+  await db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(hashPw(password), req.user.id);
+  await db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?').run(req.user.id, getCookie(req, 'sid'));
   res.json({ ok: true });
 });
 
 // 관리자가 팀원 비밀번호를 임시 비밀번호로 재설정
 app.post('/api/users/:id/reset-password', auth, adminOnly, async (req, res) => {
-  const u = (await db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id));
+  const u = await db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
   if (!u) throw httpError(404, '사용자를 찾을 수 없습니다.');
   const temp = crypto.randomBytes(6).toString('base64url');
-  (await db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(hashPw(temp), u.id));
-  (await db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id));
+  await db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(hashPw(temp), u.id);
+  await db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
   res.json({ password: temp });
 });
 
 // 관리자가 팀원 삭제 (그 사람이 등록한 일정·첨부파일도 함께 삭제)
 app.delete('/api/users/:id', auth, adminOnly, async (req, res) => {
-  const u = (await db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id));
+  const u = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
   if (!u) throw httpError(404, '사용자를 찾을 수 없습니다.');
   if (u.id === req.user.id) throw httpError(400, '본인 계정은 삭제할 수 없습니다.');
   const owned = await db.prepare('SELECT id FROM events WHERE owner_id = ?').all(u.id);
@@ -218,7 +218,7 @@ const canEditEvent = (ev, att, user) =>
   (ev.edit_perm === 'attendees' && isInvolved(ev, att, user.id)) ||
   (ev.edit_perm === 'team' && canSee(ev, att, user.id));
 
-const attendeesOf = async (eventId) => (await db.prepare('SELECT user_id, response FROM attendees WHERE event_id = ?').all(eventId));
+const attendeesOf = async (eventId) => await db.prepare('SELECT user_id, response FROM attendees WHERE event_id = ?').all(eventId);
 // 일정과 관련된 모든 사람(등록자·참석자·담당자)
 const involvedIds = async (ev, att) => {
   att ??= await attendeesOf(ev.id);
@@ -259,7 +259,7 @@ async function loadEvents() {
 }
 
 async function visibleOccurrences(user, from, to) {
-  const d = (await loadEvents());
+  const d = await loadEvents();
   const out = [];
   for (const ev of d.events) {
     const att = d.attendees.get(ev.id);
@@ -322,7 +322,7 @@ function toEvent({ ev, occ, att, alarms, files, commentCount, last }, user, name
 app.get('/api/events', auth, async (req, res) => {
   if (!req.query.start || !req.query.end) return res.status(400).json({ error: 'start, end 필요' });
   const [from, to] = parseRange(req.query);
-  const names = (await userNames());
+  const names = await userNames();
   res.json((await visibleOccurrences(req.user, from, to)).map((it) => toEvent(it, req.user, names)));
 });
 
@@ -340,7 +340,7 @@ app.get('/api/search', auth, async (req, res) => {
   const status = ['active', 'done', 'cancelled'].includes(req.query.status) ? req.query.status : null;
   const urgentOnly = req.query.urgent === '1';
   const importance = ['0', '1', '2'].includes(req.query.importance) ? +req.query.importance : null;
-  const names = (await userNames());
+  const names = await userNames();
   const items = (await visibleOccurrences(req.user, from, to))
     .filter(({ ev, occ, att }) => {
       const e = occ.ev;
@@ -421,28 +421,28 @@ function cleanPerms(b) {
 // 참석자 목록을 맞추고(기존 응답은 유지), 알람을 맞춘다
 async function setChildren(eventId, attendees, alarms) {
   const have = new Set((await attendeesOf(eventId)).map((a) => a.user_id));
-  for (const uid of have) if (!attendees.includes(uid)) (await db.prepare('DELETE FROM attendees WHERE event_id = ? AND user_id = ?').run(eventId, uid));
-  for (const uid of attendees) if (!have.has(uid)) (await db.prepare('INSERT INTO attendees (event_id, user_id) VALUES (?, ?)').run(eventId, uid));
+  for (const uid of have) if (!attendees.includes(uid)) await db.prepare('DELETE FROM attendees WHERE event_id = ? AND user_id = ?').run(eventId, uid);
+  for (const uid of attendees) if (!have.has(uid)) await db.prepare('INSERT INTO attendees (event_id, user_id) VALUES (?, ?)').run(eventId, uid);
   // 기존 알람은 유지하고(발송 기록 보존) 변경된 것만 추가/삭제
-  const haveAl = (await db.prepare('SELECT id, minutes FROM alarms WHERE event_id = ?').all(eventId));
-  for (const a of haveAl) if (!alarms.includes(a.minutes)) (await db.prepare('DELETE FROM alarms WHERE id = ?').run(a.id));
-  for (const m of alarms) if (!haveAl.some((a) => a.minutes === m)) (await db.prepare('INSERT INTO alarms (event_id, minutes) VALUES (?, ?)').run(eventId, m));
+  const haveAl = await db.prepare('SELECT id, minutes FROM alarms WHERE event_id = ?').all(eventId);
+  for (const a of haveAl) if (!alarms.includes(a.minutes)) await db.prepare('DELETE FROM alarms WHERE id = ?').run(a.id);
+  for (const m of alarms) if (!haveAl.some((a) => a.minutes === m)) await db.prepare('INSERT INTO alarms (event_id, minutes) VALUES (?, ?)').run(eventId, m);
 }
 
 async function insertEvent(ownerId, f) {
-  const r = (await db
+  const r = await db
     .prepare('INSERT INTO events (owner_id, assignee_id, title, start, end, all_day, location, memo, category, urgent, importance, kind, visibility, edit_perm, recur) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(ownerId, f.assignee_id, f.title, f.start, f.end, f.all_day, f.location, f.memo, f.category, f.urgent, f.importance, f.kind, f.visibility, f.edit_perm, f.recur ? JSON.stringify(f.recur) : null));
+    .run(ownerId, f.assignee_id, f.title, f.start, f.end, f.all_day, f.location, f.memo, f.category, f.urgent, f.importance, f.kind, f.visibility, f.edit_perm, f.recur ? JSON.stringify(f.recur) : null);
   const id = Number(r.lastInsertRowid);
-  (await setChildren(id, f.attendees, f.alarms));
+  await setChildren(id, f.attendees, f.alarms);
   return id;
 }
 
 // 수정 가능한 일정을 가져온다. manage=true 이면 등록자·관리자만 허용 (삭제, 공개/수정권한 변경)
 async function ownEvent(req, { manage = false } = {}) {
-  const ev = (await db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id));
+  const ev = await db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
   if (!ev) throw httpError(404, '일정을 찾을 수 없습니다.');
-  const att = (await attendeesOf(ev.id));
+  const att = await attendeesOf(ev.id);
   if (!canSee(ev, att, req.user.id) && req.user.role !== 'admin') throw httpError(404, '일정을 찾을 수 없습니다.');
   if (manage ? !canManage(ev, req.user) : !canEditEvent(ev, att, req.user)) {
     throw httpError(403, manage ? '등록자만 할 수 있는 작업입니다.' : '이 일정을 수정할 권한이 없습니다.');
@@ -451,8 +451,8 @@ async function ownEvent(req, { manage = false } = {}) {
 }
 // 볼 수 있는 일정만 가져온다 (댓글·이력·응답용)
 async function visibleEvent(req) {
-  const ev = (await db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id));
-  if (!ev || (!canSee(ev, (await attendeesOf(ev.id)), req.user.id) && req.user.role !== 'admin')) throw httpError(404, '일정을 찾을 수 없습니다.');
+  const ev = await db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
+  if (!ev || (!canSee(ev, await attendeesOf(ev.id), req.user.id) && req.user.role !== 'admin')) throw httpError(404, '일정을 찾을 수 없습니다.');
   return ev;
 }
 
@@ -462,14 +462,14 @@ async function truncateSeries(ev, occ) {
   recur.endType = 'until';
   recur.until = fmtDate(parse(occ) - DAY);
   recur.count = null;
-  (await db.prepare('UPDATE events SET recur = ? WHERE id = ?').run(JSON.stringify(recur), ev.id));
-  (await db.prepare('DELETE FROM exceptions WHERE event_id = ? AND occ >= ?').run(ev.id, occ));
+  await db.prepare('UPDATE events SET recur = ? WHERE id = ?').run(JSON.stringify(recur), ev.id);
+  await db.prepare('DELETE FROM exceptions WHERE event_id = ? AND occ >= ?').run(ev.id, occ);
 }
 const masterKey = (ev) => fmt(parse(ev.start), ev.all_day);
 
 // 해당 회차의 현재 값 (변경 전 비교용)
 async function occurrenceValues(ev, occ) {
-  const exceptions = (await db.prepare('SELECT * FROM exceptions WHERE event_id = ?').all(ev.id));
+  const exceptions = await db.prepare('SELECT * FROM exceptions WHERE event_id = ?').all(ev.id);
   const s = parse(occ);
   return expand(ev, s, s + 1, exceptions).find((o) => o.key === occ)?.ev || ev;
 }
@@ -503,20 +503,20 @@ function diffEvent(old, oldEv, f, names, withRecur = true) {
 
 // 일정 1건 등록 (직접 등록과 엑셀 업로드가 함께 사용): 이력 기록 + 초대/담당자 알림
 async function createEvent(user, f, source = '') {
-  const id = (await tx(async () => {
-    const id = (await insertEvent(user.id, f));
-    (await addHistory(id, user.id, 'created', `일정 등록${source}: ${f.title} (${whenText(f)})`));
+  const id = await tx(async () => {
+    const id = await insertEvent(user.id, f);
+    await addHistory(id, user.id, 'created', `일정 등록${source}: ${f.title} (${whenText(f)})`);
     return id;
-  }));
+  });
   const invited = f.attendees.filter((u) => u !== user.id);
   const note = { event_id: id, ref_start: f.start, body: `${user.name}님 · ${whenText(f)}${f.location ? ' · ' + f.location : ''}` };
-  (await pushNote(invited, { ...note, type: 'invite', title: `[초대] ${f.title}` }, user.id));
-  (await pushNote(f.assignee_id && !invited.includes(f.assignee_id) ? [f.assignee_id] : [], { ...note, type: 'assign', title: `[담당자 지정] ${f.title}` }, user.id));
+  await pushNote(invited, { ...note, type: 'invite', title: `[초대] ${f.title}` }, user.id);
+  await pushNote(f.assignee_id && !invited.includes(f.assignee_id) ? [f.assignee_id] : [], { ...note, type: 'assign', title: `[담당자 지정] ${f.title}` }, user.id);
   return id;
 }
 
 app.post('/api/events', auth, async (req, res) => {
-  res.json({ id: (await createEvent(req.user, (await clean(req.body)))) });
+  res.json({ id: await createEvent(req.user, await clean(req.body)) });
 });
 
 // ---------- 엑셀 업로드 (일정 일괄 등록) ----------
@@ -736,7 +736,7 @@ app.post('/api/import/preview', auth, uploadMem.single('file'), async (req, res)
 
   const byName = new Map();
   for (const u of (await db.prepare('SELECT id, name FROM users').all())) byName.set(u.name, [...(byName.get(u.name) || []), u.id]);
-  const names = (await userNames());
+  const names = await userNames();
   const existing = new Set((await db.prepare('SELECT title, start FROM events WHERE owner_id = ?').all(req.user.id)).map((e) => `${e.title}|${e.start}`));
   const seen = new Set();
   const out = [];
@@ -745,7 +745,7 @@ app.post('/api/import/preview', auth, uploadMem.single('file'), async (req, res)
     let cleaned = null;
     if (!p.errors.length) {
       try {
-        cleaned = (await clean(p.body));
+        cleaned = await clean(p.body);
       } catch (e) {
         p.errors.push(e.message);
       }
@@ -840,8 +840,8 @@ app.get('/api/import/template', auth, async (req, res) => {
 });
 
 app.put('/api/events/:id', auth, async (req, res) => {
-  const ev = (await ownEvent(req));
-  const f = (await clean(req.body));
+  const ev = await ownEvent(req);
+  const f = await clean(req.body);
   // 종류·공개 범위·수정 권한은 등록자(또는 관리자)만 바꿀 수 있다
   if (!canManage(ev, req.user)) Object.assign(f, { kind: ev.kind, visibility: ev.visibility, edit_perm: ev.edit_perm });
   let scope = req.body.scope || 'all';
@@ -849,27 +849,27 @@ app.put('/api/events/:id', auth, async (req, res) => {
   if (!ev.recur) scope = 'all';
   if (scope === 'future' && occ === masterKey(ev)) scope = 'all';
 
-  const names = (await userNames());
-  const oldOcc = (await occurrenceValues(ev, occ));
-  const oldAtt = (await attendeesOf(ev.id));
+  const names = await userNames();
+  const oldOcc = await occurrenceValues(ev, occ);
+  const oldAtt = await attendeesOf(ev.id);
   const oldAttIds = oldAtt.map((a) => a.user_id);
   const changes = diffEvent(oldOcc, ev, f, names, scope !== 'one'); // '이 일정만' 수정에서는 반복 규칙을 바꾸지 않는다
 
-  const id = (await tx(async () => {
+  const id = await tx(async () => {
     if (scope === 'one') {
       const ov = { title: f.title, start: f.start, end: f.end, all_day: f.all_day, location: f.location, memo: f.memo, category: f.category, urgent: f.urgent, importance: f.importance };
-      const cur = (await db.prepare('SELECT override FROM exceptions WHERE event_id = ? AND occ = ?').get(ev.id, occ));
+      const cur = await db.prepare('SELECT override FROM exceptions WHERE event_id = ? AND occ = ?').get(ev.id, occ);
       const merged = { ...(cur?.override ? JSON.parse(cur.override) : {}), ...ov };
-      (await db.prepare('INSERT INTO exceptions (event_id, occ, deleted, override) VALUES (?, ?, 0, ?) ON CONFLICT(event_id, occ) DO UPDATE SET deleted = 0, override = excluded.override').run(ev.id, occ, JSON.stringify(merged)));
-      (await db.prepare('UPDATE events SET assignee_id = ?, kind = ?, visibility = ?, edit_perm = ? WHERE id = ?').run(f.assignee_id, f.kind, f.visibility, f.edit_perm, ev.id));
-      (await setChildren(ev.id, f.attendees, f.alarms));
+      await db.prepare('INSERT INTO exceptions (event_id, occ, deleted, override) VALUES (?, ?, 0, ?) ON CONFLICT(event_id, occ) DO UPDATE SET deleted = 0, override = excluded.override').run(ev.id, occ, JSON.stringify(merged));
+      await db.prepare('UPDATE events SET assignee_id = ?, kind = ?, visibility = ?, edit_perm = ? WHERE id = ?').run(f.assignee_id, f.kind, f.visibility, f.edit_perm, ev.id);
+      await setChildren(ev.id, f.attendees, f.alarms);
       return ev.id;
     }
     if (scope === 'future') {
-      (await truncateSeries(ev, occ));
-      const nid = (await insertEvent(ev.owner_id, f));
+      await truncateSeries(ev, occ);
+      const nid = await insertEvent(ev.owner_id, f);
       // 참석 응답은 새 시리즈로 이어받는다
-      for (const a of oldAtt) (await db.prepare('UPDATE attendees SET response = ? WHERE event_id = ? AND user_id = ?').run(a.response, nid, a.user_id));
+      for (const a of oldAtt) await db.prepare('UPDATE attendees SET response = ? WHERE event_id = ? AND user_id = ?').run(a.response, nid, a.user_id);
       return nid;
     }
     let { start, end } = f;
@@ -881,13 +881,13 @@ app.put('/api/events/:id', auth, async (req, res) => {
       start = fmt(s, f.all_day);
       end = fmt(s + (dur[1] - dur[0]) - (f.all_day ? DAY : 0), f.all_day);
     }
-    (await db.prepare('UPDATE events SET title=?, start=?, end=?, all_day=?, location=?, memo=?, category=?, urgent=?, importance=?, assignee_id=?, kind=?, visibility=?, edit_perm=?, recur=? WHERE id=?').run(
+    await db.prepare('UPDATE events SET title=?, start=?, end=?, all_day=?, location=?, memo=?, category=?, urgent=?, importance=?, assignee_id=?, kind=?, visibility=?, edit_perm=?, recur=? WHERE id=?').run(
       f.title, start, end, f.all_day, f.location, f.memo, f.category, f.urgent, f.importance, f.assignee_id, f.kind, f.visibility, f.edit_perm, f.recur ? JSON.stringify(f.recur) : null, ev.id,
-    ));
-    if (ev.recur && start !== ev.start) (await db.prepare('DELETE FROM exceptions WHERE event_id = ?').run(ev.id));
-    (await setChildren(ev.id, f.attendees, f.alarms));
+    );
+    if (ev.recur && start !== ev.start) await db.prepare('DELETE FROM exceptions WHERE event_id = ?').run(ev.id);
+    await setChildren(ev.id, f.attendees, f.alarms);
     return ev.id;
-  }));
+  });
 
   // 이력 + 알림
   const invited = f.attendees.filter((u) => !oldAttIds.includes(u) && u !== req.user.id);
@@ -896,91 +896,91 @@ app.put('/api/events/:id', auth, async (req, res) => {
   if (invited.length) lines.push(`참석자 초대: ${invited.map((u) => names.get(u)).join(', ')}`);
   if (removed.length) lines.push(`참석자 제외: ${removed.map((u) => names.get(u)).join(', ')}`);
   const prefix = scope === 'one' ? `[이 일정만 · ${occ.replace('T', ' ')}] ` : scope === 'future' ? `[이후 일정 · ${occ.replace('T', ' ')}] ` : '';
-  if (lines.length) (await addHistory(id, req.user.id, 'updated', prefix + lines.join('\n')));
+  if (lines.length) await addHistory(id, req.user.id, 'updated', prefix + lines.join('\n'));
   const note = { event_id: id, ref_start: f.start };
-  (await pushNote(invited, { ...note, type: 'invite', title: `[초대] ${f.title}`, body: `${req.user.name}님 · ${whenText(f)}` }, req.user.id));
+  await pushNote(invited, { ...note, type: 'invite', title: `[초대] ${f.title}`, body: `${req.user.name}님 · ${whenText(f)}` }, req.user.id);
   if (f.assignee_id !== ev.assignee_id && f.assignee_id && !invited.includes(f.assignee_id)) {
-    (await pushNote([f.assignee_id], { ...note, type: 'assign', title: `[담당자 지정] ${f.title}`, body: `${req.user.name}님이 지정했습니다.` }, req.user.id));
+    await pushNote([f.assignee_id], { ...note, type: 'assign', title: `[담당자 지정] ${f.title}`, body: `${req.user.name}님이 지정했습니다.` }, req.user.id);
   }
   if (changes.length) {
     const audience = (await involvedIds({ ...ev, assignee_id: f.assignee_id }, f.attendees.map((u) => ({ user_id: u })))).filter((u) => !invited.includes(u) && u !== f.assignee_id);
     const withAssignee = f.assignee_id && f.assignee_id === ev.assignee_id ? [f.assignee_id] : [];
-    (await pushNote([...audience, ...withAssignee], { ...note, type: 'change', title: `[변경] ${f.title}`, body: `${req.user.name}님이 변경\n${changes.join('\n')}` }, req.user.id));
+    await pushNote([...audience, ...withAssignee], { ...note, type: 'change', title: `[변경] ${f.title}`, body: `${req.user.name}님이 변경\n${changes.join('\n')}` }, req.user.id);
   }
   res.json({ id });
 });
 
 // 일정 종료(완료) / 취소 / 복원 (삭제와 달리 기록이 남고 되돌릴 수 있다)
 app.post('/api/events/:id/status', auth, async (req, res) => {
-  const ev = (await ownEvent(req));
+  const ev = await ownEvent(req);
   const status = ['cancelled', 'done'].includes(req.body.status) ? req.body.status : 'active';
   let scope = req.body.scope === 'one' ? 'one' : 'all';
   const occ = req.body.occ || masterKey(ev);
   if (!ev.recur) scope = 'all';
-  const cur = (await occurrenceValues(ev, occ));
+  const cur = await occurrenceValues(ev, occ);
   const word = status === 'active' ? (cur.status === 'done' ? '종료 해제' : '복원') : STATUS_WORD[status];
-  (await tx(async () => {
+  await tx(async () => {
     if (scope === 'one') {
-      const row = (await db.prepare('SELECT override FROM exceptions WHERE event_id = ? AND occ = ?').get(ev.id, occ));
+      const row = await db.prepare('SELECT override FROM exceptions WHERE event_id = ? AND occ = ?').get(ev.id, occ);
       const ov = { ...(row?.override ? JSON.parse(row.override) : {}), status };
-      (await db.prepare('INSERT INTO exceptions (event_id, occ, deleted, override) VALUES (?, ?, 0, ?) ON CONFLICT(event_id, occ) DO UPDATE SET deleted = 0, override = excluded.override').run(ev.id, occ, JSON.stringify(ov)));
+      await db.prepare('INSERT INTO exceptions (event_id, occ, deleted, override) VALUES (?, ?, 0, ?) ON CONFLICT(event_id, occ) DO UPDATE SET deleted = 0, override = excluded.override').run(ev.id, occ, JSON.stringify(ov));
     } else {
-      (await db.prepare('UPDATE events SET status = ? WHERE id = ?').run(status, ev.id));
+      await db.prepare('UPDATE events SET status = ? WHERE id = ?').run(status, ev.id);
       // 개별 회차의 취소/복원 설정은 전체 설정을 따르도록 정리
       for (const x of (await db.prepare('SELECT id, override FROM exceptions WHERE event_id = ? AND override IS NOT NULL').all(ev.id))) {
         const ov = JSON.parse(x.override);
         if ('status' in ov) {
           delete ov.status;
-          (await db.prepare('UPDATE exceptions SET override = ? WHERE id = ?').run(JSON.stringify(ov), x.id));
+          await db.prepare('UPDATE exceptions SET override = ? WHERE id = ?').run(JSON.stringify(ov), x.id);
         }
       }
     }
-    (await addHistory(ev.id, req.user.id, status === 'active' ? 'restored' : status, `${scope === 'one' ? `이 일정만 (${occ.replace('T', ' ')}) ` : ev.recur ? '모든 일정 ' : ''}${word}`));
-  }));
-  (await pushNote((await involvedIds(ev)), {
+    await addHistory(ev.id, req.user.id, status === 'active' ? 'restored' : status, `${scope === 'one' ? `이 일정만 (${occ.replace('T', ' ')}) ` : ev.recur ? '모든 일정 ' : ''}${word}`);
+  });
+  await pushNote(await involvedIds(ev), {
     type: { cancelled: 'cancel', done: 'done', active: 'restore' }[status], event_id: ev.id, ref_start: cur.start,
     title: `[${word}] ${cur.title}`, body: `${req.user.name}님이 일정을 ${word}했습니다. (${whenText(cur)})`,
-  }, req.user.id));
+  }, req.user.id);
   res.json({ ok: true });
 });
 
 app.delete('/api/events/:id', auth, async (req, res) => {
-  const ev = (await ownEvent(req, { manage: true }));
+  const ev = await ownEvent(req, { manage: true });
   let scope = String(req.query.scope || 'all');
   const occ = String(req.query.occ || masterKey(ev));
   if (!ev.recur) scope = 'all';
   if (scope === 'future' && occ === masterKey(ev)) scope = 'all';
-  const audience = (await involvedIds(ev));
-  const cur = (await occurrenceValues(ev, occ));
+  const audience = await involvedIds(ev);
+  const cur = await occurrenceValues(ev, occ);
   let wholeDelete = false;
-  (await tx(async () => {
+  await tx(async () => {
     if (scope === 'one') {
-      (await db.prepare('INSERT INTO exceptions (event_id, occ, deleted, override) VALUES (?, ?, 1, NULL) ON CONFLICT(event_id, occ) DO UPDATE SET deleted = 1, override = NULL').run(ev.id, occ));
-      (await addHistory(ev.id, req.user.id, 'updated', `이 일정만 삭제 (${occ.replace('T', ' ')})`));
+      await db.prepare('INSERT INTO exceptions (event_id, occ, deleted, override) VALUES (?, ?, 1, NULL) ON CONFLICT(event_id, occ) DO UPDATE SET deleted = 1, override = NULL').run(ev.id, occ);
+      await addHistory(ev.id, req.user.id, 'updated', `이 일정만 삭제 (${occ.replace('T', ' ')})`);
     } else if (scope === 'future') {
-      (await truncateSeries(ev, occ));
-      (await addHistory(ev.id, req.user.id, 'updated', `이후 일정 삭제 (${occ.replace('T', ' ')} 부터)`));
+      await truncateSeries(ev, occ);
+      await addHistory(ev.id, req.user.id, 'updated', `이후 일정 삭제 (${occ.replace('T', ' ')} 부터)`);
     } else {
       wholeDelete = true; // 트랜잭션 밖에서 연쇄 삭제 (첨부파일 저장소 정리 포함)
     }
-  }));
+  });
   if (wholeDelete) await deleteEventCascade(ev.id);
-  (await pushNote(audience, { type: 'delete', title: `[삭제] ${cur.title}`, body: `${req.user.name}님이 일정을 삭제했습니다. (${whenText(cur)})` }, req.user.id));
+  await pushNote(audience, { type: 'delete', title: `[삭제] ${cur.title}`, body: `${req.user.name}님이 일정을 삭제했습니다. (${whenText(cur)})` }, req.user.id);
   res.json({ ok: true });
 });
 
 // ---------- 참석 응답 / 겹침 안내 ----------
 app.post('/api/events/:id/respond', auth, async (req, res) => {
-  const ev = (await visibleEvent(req));
+  const ev = await visibleEvent(req);
   const response = req.body.response;
   if (!['yes', 'no', 'maybe'].includes(response)) throw httpError(400, '응답 값이 올바르지 않습니다.');
-  const r = (await db.prepare('UPDATE attendees SET response = ? WHERE event_id = ? AND user_id = ?').run(response, ev.id, req.user.id));
+  const r = await db.prepare('UPDATE attendees SET response = ? WHERE event_id = ? AND user_id = ?').run(response, ev.id, req.user.id);
   if (r.changes === 0) throw httpError(403, '참석자로 초대된 일정이 아닙니다.');
-  (await addHistory(ev.id, req.user.id, 'response', `${req.user.name}님 응답: ${RESPONSES[response]}`));
-  (await pushNote([ev.owner_id], {
+  await addHistory(ev.id, req.user.id, 'response', `${req.user.name}님 응답: ${RESPONSES[response]}`);
+  await pushNote([ev.owner_id], {
     type: 'response', event_id: ev.id, ref_start: ev.start,
     title: `[참석 응답] ${ev.title}`, body: `${req.user.name}님: ${RESPONSES[response]}`,
-  }, req.user.id));
+  }, req.user.id);
   res.json({ ok: true });
 });
 
@@ -994,8 +994,8 @@ app.post('/api/conflicts', auth, async (req, res) => {
   const exclude = +b.exclude_id || null;
   const owner = exclude ? (await db.prepare('SELECT owner_id FROM events WHERE id = ?').get(exclude))?.owner_id : req.user.id;
   const people = new Set([owner, +b.assignee_id || null, ...(b.attendees || []).map(Number)].filter(Boolean));
-  const names = (await userNames());
-  const d = (await loadEvents());
+  const names = await userNames();
+  const d = await loadEvents();
   const out = [];
   for (const ev of d.events) {
     if (ev.id === exclude) continue;
@@ -1017,38 +1017,38 @@ app.post('/api/conflicts', auth, async (req, res) => {
 
 // ---------- 댓글 / 변경 이력 ----------
 app.get('/api/events/:id/comments', auth, async (req, res) => {
-  const ev = (await visibleEvent(req));
+  const ev = await visibleEvent(req);
   res.json(
     (await db.prepare('SELECT c.id, c.body, c.created_at, c.user_id, u.name FROM comments c JOIN users u ON u.id = c.user_id WHERE c.event_id = ? ORDER BY c.id').all(ev.id))
       .map((c) => ({ ...c, canDelete: c.user_id === req.user.id || canManage(ev, req.user) })),
   );
 });
 app.post('/api/events/:id/comments', auth, async (req, res) => {
-  const ev = (await visibleEvent(req));
+  const ev = await visibleEvent(req);
   const body = String(req.body.body || '').trim().slice(0, 2000);
   if (!body) throw httpError(400, '댓글 내용을 입력하세요.');
-  (await db.prepare('INSERT INTO comments (event_id, user_id, body) VALUES (?, ?, ?)').run(ev.id, req.user.id, body));
-  (await addHistory(ev.id, req.user.id, 'comment', `댓글 작성: ${body.length > 80 ? body.slice(0, 80) + '…' : body}`));
-  (await pushNote((await involvedIds(ev)), {
+  await db.prepare('INSERT INTO comments (event_id, user_id, body) VALUES (?, ?, ?)').run(ev.id, req.user.id, body);
+  await addHistory(ev.id, req.user.id, 'comment', `댓글 작성: ${body.length > 80 ? body.slice(0, 80) + '…' : body}`);
+  await pushNote(await involvedIds(ev), {
     type: 'comment', event_id: ev.id, ref_start: ev.start,
     title: `[댓글] ${ev.title}`, body: `${req.user.name}: ${body.slice(0, 80)}`,
-  }, req.user.id));
+  }, req.user.id);
   res.json({ ok: true });
 });
 app.delete('/api/comments/:id', auth, async (req, res) => {
-  const c = (await db.prepare('SELECT * FROM comments WHERE id = ?').get(req.params.id));
+  const c = await db.prepare('SELECT * FROM comments WHERE id = ?').get(req.params.id);
   if (!c) throw httpError(404, '댓글을 찾을 수 없습니다.');
-  const ev = (await db.prepare('SELECT * FROM events WHERE id = ?').get(c.event_id));
+  const ev = await db.prepare('SELECT * FROM events WHERE id = ?').get(c.event_id);
   if (c.user_id !== req.user.id && !canManage(ev, req.user)) throw httpError(403, '권한이 없습니다.');
-  (await db.prepare('DELETE FROM comments WHERE id = ?').run(c.id));
+  await db.prepare('DELETE FROM comments WHERE id = ?').run(c.id);
   const author = (await userNames()).get(c.user_id) || '(알 수 없음)';
-  (await addHistory(ev.id, req.user.id, 'comment', `댓글 삭제 (작성자 ${author}): ${c.body.length > 60 ? c.body.slice(0, 60) + '…' : c.body}`));
+  await addHistory(ev.id, req.user.id, 'comment', `댓글 삭제 (작성자 ${author}): ${c.body.length > 60 ? c.body.slice(0, 60) + '…' : c.body}`);
   res.json({ ok: true });
 });
 
 // 최근 활동 기록 (내가 볼 수 있는 일정의 등록·변경·취소·댓글·첨부·응답 이력)
 app.get('/api/activity', auth, async (req, res) => {
-  const d = (await loadEvents());
+  const d = await loadEvents();
   const visible = new Map();
   for (const ev of d.events) if (canSee(ev, d.attendees.get(ev.id), req.user.id)) visible.set(ev.id, ev);
   const rows = (await db
@@ -1060,45 +1060,45 @@ app.get('/api/activity', auth, async (req, res) => {
   res.json({ items: rows });
 });
 app.get('/api/events/:id/history', auth, async (req, res) => {
-  const ev = (await visibleEvent(req));
+  const ev = await visibleEvent(req);
   res.json(
-    (await db.prepare('SELECT h.id, h.action, h.detail, h.created_at, u.name FROM history h LEFT JOIN users u ON u.id = h.user_id WHERE h.event_id = ? ORDER BY h.id DESC LIMIT 100').all(ev.id)),
+    await db.prepare('SELECT h.id, h.action, h.detail, h.created_at, u.name FROM history h LEFT JOIN users u ON u.id = h.user_id WHERE h.event_id = ? ORDER BY h.id DESC LIMIT 100').all(ev.id),
   );
 });
 
 // ---------- 대시보드 빠른 메모 (본인만 볼 수 있음) ----------
 app.get('/api/notes', auth, async (req, res) => {
-  res.json((await db.prepare('SELECT id, body, created_at FROM notes WHERE user_id = ? ORDER BY id DESC LIMIT 100').all(req.user.id)));
+  res.json(await db.prepare('SELECT id, body, created_at FROM notes WHERE user_id = ? ORDER BY id DESC LIMIT 100').all(req.user.id));
 });
 app.post('/api/notes', auth, async (req, res) => {
   const body = String(req.body?.body || '').trim().slice(0, 500);
   if (!body) throw httpError(400, '메모 내용을 입력하세요.');
-  const r = (await db.prepare('INSERT INTO notes (user_id, body) VALUES (?, ?)').run(req.user.id, body));
+  const r = await db.prepare('INSERT INTO notes (user_id, body) VALUES (?, ?)').run(req.user.id, body);
   res.json({ id: Number(r.lastInsertRowid) });
 });
 app.delete('/api/notes/:id', auth, async (req, res) => {
-  (await db.prepare('DELETE FROM notes WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id));
+  await db.prepare('DELETE FROM notes WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
   res.json({ ok: true });
 });
 
 // ---------- 내부 알림 ----------
 app.get('/api/notifications', auth, async (req, res) => {
-  const items = (await db.prepare('SELECT id, type, event_id, ref_start, title, body, created_at, read_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(req.user.id));
+  const items = await db.prepare('SELECT id, type, event_id, ref_start, title, body, created_at, read_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(req.user.id);
   const unread = (await db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read_at IS NULL').get(req.user.id)).n;
   res.json({ unread, items });
 });
 app.post('/api/notifications/read', auth, async (req, res) => {
   if (req.body?.all) {
-    (await db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND read_at IS NULL").run(req.user.id));
+    await db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND read_at IS NULL").run(req.user.id);
   } else {
     for (const id of (req.body?.ids || []).map(Number)) {
-      (await db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ? AND read_at IS NULL").run(id, req.user.id));
+      await db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ? AND read_at IS NULL").run(id, req.user.id);
     }
   }
   res.json({ ok: true });
 });
 app.delete('/api/notifications', auth, async (req, res) => {
-  (await db.prepare('DELETE FROM notifications WHERE user_id = ? AND read_at IS NOT NULL').run(req.user.id));
+  await db.prepare('DELETE FROM notifications WHERE user_id = ? AND read_at IS NOT NULL').run(req.user.id);
   res.json({ ok: true });
 });
 
@@ -1112,19 +1112,19 @@ app.post('/api/events/:id/attachments', auth, upload.array('files'), async (req,
     const stored = await saveFile(f.buffer, name, f.mimetype);
     await db.prepare("INSERT INTO attachments (event_id, filename, stored, size, user_id, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))").run(req.params.id, name, stored, f.size, req.user.id);
   }
-  if (names.length) (await addHistory(ev.id, req.user.id, 'updated', `첨부파일 추가: ${names.join(', ')}`));
+  if (names.length) await addHistory(ev.id, req.user.id, 'updated', `첨부파일 추가: ${names.join(', ')}`);
   res.json({ ok: true });
 });
 
 async function attachmentFor(req) {
-  const a = (await db.prepare('SELECT * FROM attachments WHERE id = ?').get(req.params.id));
+  const a = await db.prepare('SELECT * FROM attachments WHERE id = ?').get(req.params.id);
   if (!a) throw httpError(404, '파일을 찾을 수 없습니다.');
-  const ev = (await db.prepare('SELECT * FROM events WHERE id = ?').get(a.event_id));
-  if (!canSee(ev, (await attendeesOf(a.event_id)), req.user.id)) throw httpError(403, '권한이 없습니다.');
+  const ev = await db.prepare('SELECT * FROM events WHERE id = ?').get(a.event_id);
+  if (!canSee(ev, await attendeesOf(a.event_id), req.user.id)) throw httpError(403, '권한이 없습니다.');
   return { a, ev };
 }
 app.get('/api/attachments/:id', auth, async (req, res) => {
-  const { a } = (await attachmentFor(req));
+  const { a } = await attachmentFor(req);
   const file = await openFile(a.stored);
   if (!file) throw httpError(404, '저장된 파일을 찾을 수 없습니다.');
   res.setHeader('Content-Type', file.contentType || 'application/octet-stream');
@@ -1134,11 +1134,11 @@ app.get('/api/attachments/:id', auth, async (req, res) => {
   file.stream.pipe(res);
 });
 app.delete('/api/attachments/:id', auth, async (req, res) => {
-  const { a, ev } = (await attachmentFor(req));
-  if (!canEditEvent(ev, (await attendeesOf(ev.id)), req.user)) throw httpError(403, '권한이 없습니다.');
+  const { a, ev } = await attachmentFor(req);
+  if (!canEditEvent(ev, await attendeesOf(ev.id), req.user)) throw httpError(403, '권한이 없습니다.');
   await removeFile(a.stored);
-  (await db.prepare('DELETE FROM attachments WHERE id = ?').run(a.id));
-  (await addHistory(ev.id, req.user.id, 'updated', `첨부파일 삭제: ${a.filename}`));
+  await db.prepare('DELETE FROM attachments WHERE id = ?').run(a.id);
+  await addHistory(ev.id, req.user.id, 'updated', `첨부파일 삭제: ${a.filename}`);
   res.json({ ok: true });
 });
 
@@ -1148,7 +1148,7 @@ app.get('/api/export', auth, async (req, res) => {
   if (!req.query.start || !req.query.end) return res.status(400).json({ error: 'start, end 필요' });
   const [from, to] = parseRange(req.query);
   const onlyMine = req.query.users ? new Set(String(req.query.users).split(',').map(Number)) : null;
-  const names = (await userNames());
+  const names = await userNames();
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('일정');
   ws.columns = [
@@ -1198,7 +1198,7 @@ app.get('/api/export', auth, async (req, res) => {
 
 // ---------- 교육 현황 (교육계획 엑셀 -> 월별·인원별 정리) ----------
 app.get('/api/trainings', auth, async (_req, res) => {
-  res.json((await db.prepare('SELECT * FROM trainings ORDER BY month = 0, month, COALESCE(start_date, \'9999\'), dept, name').all()));
+  res.json(await db.prepare('SELECT * FROM trainings ORDER BY month = 0, month, COALESCE(start_date, \'9999\'), dept, name').all());
 });
 
 // 교육계획 엑셀 업로드: 기존 교육 현황을 업로드한 파일 내용으로 교체한다 (관리자)
@@ -1225,7 +1225,7 @@ app.post('/api/trainings/import', auth, adminOnly, uploadMem.single('file'), asy
 
 // 월별·인원별 정리본 엑셀 내려받기
 app.get('/api/trainings/export', auth, async (_req, res) => {
-  const rows = (await db.prepare('SELECT * FROM trainings ORDER BY id').all());
+  const rows = await db.prepare('SELECT * FROM trainings ORDER BY id').all();
   if (!rows.length) throw httpError(404, '내보낼 교육 현황이 없습니다. 먼저 교육계획 엑셀을 업로드하세요.');
   const wb = buildTrainingReport(rows);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -1240,14 +1240,14 @@ const TRAINEES_SQL = `SELECT t.company, t.name, MAX(t.dept) AS dept, MAX(t.rank)
   GROUP BY t.company, t.name ORDER BY t.company, MAX(t.dept), t.name`;
 
 app.get('/api/training-mail/settings', auth, adminOnly, async (_req, res) => {
-  const people = (await db.prepare(TRAINEES_SQL).all());
+  const people = await db.prepare(TRAINEES_SQL).all();
   res.json({ ...(await getTrainingMailSettings()), subject: MAIL_SUBJECT, defaultIntro: DEFAULT_INTRO, defaultOutro: DEFAULT_OUTRO, leadChoices: LEAD_CHOICES, smtp: mailConfigured(), people: people.length, withEmail: people.filter((p) => p.email).length });
 });
 app.put('/api/training-mail/settings', auth, adminOnly, async (req, res) => {
-  res.json((await saveTrainingMailSettings(req.body || {})));
+  res.json(await saveTrainingMailSettings(req.body || {}));
 });
 
-app.get('/api/training-mail/emails', auth, adminOnly, async (_req, res) => res.json((await db.prepare(TRAINEES_SQL).all())));
+app.get('/api/training-mail/emails', auth, adminOnly, async (_req, res) => res.json(await db.prepare(TRAINEES_SQL).all()));
 app.put('/api/training-mail/emails', auth, adminOnly, async (req, res) => {
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   const bad = [];
@@ -1268,7 +1268,7 @@ app.put('/api/training-mail/emails', auth, adminOnly, async (req, res) => {
 
 // 메일 주소 입력용 템플릿: 교육 대상자 전원이 미리 들어 있어 "메일주소" 열만 채워서 올리면 된다
 app.get('/api/training-mail/emails/template', auth, adminOnly, async (_req, res) => {
-  const people = (await db.prepare(TRAINEES_SQL).all());
+  const people = await db.prepare(TRAINEES_SQL).all();
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('메일주소');
   ws.columns = [['소속', 12], ['부서', 18], ['직급', 8], ['성명', 10], ['메일주소', 34]].map(([header, width]) => ({ header, width }));
@@ -1299,7 +1299,7 @@ app.post('/api/training-mail/emails/import', auth, adminOnly, uploadMem.single('
     for (const [f, list] of Object.entries(names)) if (list.map(normHeader).includes(h) && !(f in cols)) cols[f] = i;
   });
   if (!cols.name || !cols.email) throw httpError(400, '첫 행에 "성명"과 "메일주소" 열이 필요합니다. 템플릿을 내려받아 사용해 보세요.');
-  const people = (await db.prepare(TRAINEES_SQL).all());
+  const people = await db.prepare(TRAINEES_SQL).all();
   const byName = new Map();
   for (const p of people) byName.set(p.name, [...(byName.get(p.name) || []), p]);
   const result = { updated: 0, notFound: [], ambiguous: [], invalid: [] };
@@ -1329,8 +1329,8 @@ app.post('/api/training-mail/emails/import', auth, adminOnly, uploadMem.single('
 
 // 오늘 발송 대상 + 앞으로 예정된 발송 일정 미리보기
 app.get('/api/training-mail/preview', auth, adminOnly, async (_req, res) => {
-  const s = (await getTrainingMailSettings());
-  res.json({ smtp: mailConfigured(), enabled: s.enabled, sendTime: s.sendTime, due: (await dueToday(s)), upcoming: (await upcomingSends(s)).slice(0, 200) });
+  const s = await getTrainingMailSettings();
+  res.json({ smtp: mailConfigured(), enabled: s.enabled, sendTime: s.sendTime, due: await dueToday(s), upcoming: (await upcomingSends(s)).slice(0, 200) });
 });
 
 // 지금 발송 (오늘 대상 중 아직 안 보낸 것만, 중복 발송 방지)
@@ -1353,8 +1353,8 @@ app.post('/api/training-mail/test', auth, adminOnly, async (req, res) => {
 
 app.get('/api/training-mail/log', auth, adminOnly, async (_req, res) => {
   res.json(
-    (await db.prepare(`SELECT l.id, l.lead, l.email, l.ok, l.error, l.sent_at, t.name, t.course, t.start_date
-      FROM training_mail_log l LEFT JOIN trainings t ON t.id = l.training_id ORDER BY l.id DESC LIMIT 150`).all()),
+    await db.prepare(`SELECT l.id, l.lead, l.email, l.ok, l.error, l.sent_at, t.name, t.course, t.start_date
+      FROM training_mail_log l LEFT JOIN trainings t ON t.id = l.training_id ORDER BY l.id DESC LIMIT 150`).all(),
   );
 });
 
