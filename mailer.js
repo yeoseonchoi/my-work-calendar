@@ -9,6 +9,10 @@ if (SMTP_HOST) {
     port: +(SMTP_PORT || 587),
     secure: SMTP_SECURE === 'true',
     auth: SMTP_USER ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
+    // 메일 서버가 응답하지 않을 때 함수가 오래 붙잡히지 않도록 시간 제한
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000,
   });
 }
 

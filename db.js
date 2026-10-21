@@ -1,15 +1,82 @@
-import { DatabaseSync } from 'node:sqlite';
+// 데이터베이스 계층: libSQL(Turso) 클라이언트.
+//  - 배포(Vercel): TURSO_DATABASE_URL / TURSO_AUTH_TOKEN 환경변수로 Turso 원격 DB에 연결
+//  - 로컬 개발: 환경변수가 없으면 data/calendar.db 파일(SQLite)을 그대로 사용
+// 기존 node:sqlite 의 prepare().get/all/run 모양을 그대로 흉내 내되 모든 호출이 Promise 를 돌려준다.
+import { createClient } from '@libsql/client';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
 
 const dataDir = process.env.DATA_DIR || path.join(import.meta.dirname, 'data');
-fs.mkdirSync(path.join(dataDir, 'uploads'), { recursive: true });
+export const uploadDir = path.join(dataDir, 'uploads'); // 로컬 개발에서만 사용 (배포 시 첨부파일은 Vercel Blob)
+export const usingRemote = !!process.env.TURSO_DATABASE_URL;
 
-export const db = new DatabaseSync(path.join(dataDir, 'calendar.db'));
-db.exec(`
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
+if (!usingRemote) fs.mkdirSync(dataDir, { recursive: true });
+const url = usingRemote ? process.env.TURSO_DATABASE_URL : pathToFileURL(path.join(dataDir, 'calendar.db')).href;
+const client = createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN || undefined });
 
+// 트랜잭션 안에서 실행되는 모든 쿼리는 같은 트랜잭션 연결을 쓴다
+const als = new AsyncLocalStorage();
+const conn = () => als.getStore() ?? client;
+
+const clean = (args) => args.map((a) => (a === undefined ? null : a));
+const toPlain = (rs) => rs.rows.map((r) => Object.fromEntries(rs.columns.map((c, i) => [c, r[i]])));
+
+export const db = {
+  prepare(sql) {
+    return {
+      get: async (...args) => toPlain(await conn().execute({ sql, args: clean(args) }))[0],
+      all: async (...args) => toPlain(await conn().execute({ sql, args: clean(args) })),
+      run: async (...args) => {
+        const rs = await conn().execute({ sql, args: clean(args) });
+        return { changes: rs.rowsAffected, lastInsertRowid: rs.lastInsertRowid == null ? undefined : Number(rs.lastInsertRowid) };
+      },
+    };
+  },
+  // 여러 문장(스키마 등) 실행
+  async exec(sql) {
+    const c = als.getStore();
+    if (c) {
+      for (const s of sql.split(/;\s*(?:\n|$)/).map((x) => x.trim()).filter(Boolean)) await c.execute(s);
+    } else {
+      await client.executeMultiple(sql);
+    }
+  },
+};
+
+/** 여러 문장을 한 번의 왕복으로 묶어 원자적으로 실행한다. list: [{ sql, args }] */
+export async function batch(list) {
+  if (!list.length) return [];
+  const c = als.getStore();
+  const stmts = list.map((s) => ({ sql: s.sql, args: clean(s.args || []) }));
+  return c ? c.batch(stmts) : client.batch(stmts, 'write');
+}
+
+/** 트랜잭션: fn 안에서 일어난 쿼리는 모두 함께 커밋되거나 함께 취소된다. */
+export async function tx(fn) {
+  if (als.getStore()) return fn(); // 이미 트랜잭션 안이면 그대로 이어서 실행
+  const t = await client.transaction('write');
+  try {
+    const r = await als.run(t, fn);
+    await t.commit();
+    return r;
+  } catch (e) {
+    try {
+      await t.rollback();
+    } catch {
+      // 이미 닫힌 경우
+    }
+    throw e;
+  } finally {
+    t.close();
+  }
+}
+
+// ───────── 스키마 ─────────
+const SCHEMA_VERSION = '4';
+
+const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT NOT NULL UNIQUE,
@@ -28,22 +95,22 @@ CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
-  start TEXT NOT NULL,          -- 'YYYY-MM-DDTHH:mm' (종일이면 'YYYY-MM-DD'), 타임존 없는 로컬 시각
-  end TEXT NOT NULL,            -- 종일이면 마지막 날짜(포함)
+  start TEXT NOT NULL,
+  end TEXT NOT NULL,
   all_day INTEGER NOT NULL DEFAULT 0,
   location TEXT NOT NULL DEFAULT '',
   memo TEXT NOT NULL DEFAULT '',
   category TEXT NOT NULL DEFAULT '기타',
-  visibility TEXT NOT NULL DEFAULT 'team',   -- team | private
-  recur TEXT,                                 -- 반복 규칙 JSON (없으면 NULL)
+  visibility TEXT NOT NULL DEFAULT 'team',
+  recur TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS exceptions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-  occ TEXT NOT NULL,            -- 원래 회차 시작 키
+  occ TEXT NOT NULL,
   deleted INTEGER NOT NULL DEFAULT 0,
-  override TEXT,                -- 변경된 필드 JSON
+  override TEXT,
   UNIQUE(event_id, occ)
 );
 CREATE TABLE IF NOT EXISTS attendees (
@@ -69,15 +136,12 @@ CREATE TABLE IF NOT EXISTS attachments (
   stored TEXT NOT NULL,
   size INTEGER NOT NULL
 );
-`);
-
-db.exec(`
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  type TEXT NOT NULL,            -- invite | assign | change | cancel | restore | delete | reminder | response | comment
+  type TEXT NOT NULL,
   event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
-  ref_start TEXT,                -- 알림을 눌렀을 때 이동할 일정 시작일
+  ref_start TEXT,
   title TEXT NOT NULL,
   body TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -92,17 +156,17 @@ CREATE TABLE IF NOT EXISTS trainings (
   dept TEXT NOT NULL DEFAULT '',
   rank TEXT NOT NULL DEFAULT '',
   name TEXT NOT NULL,
-  kind TEXT NOT NULL DEFAULT '',        -- 직무 / 계층 / 원가 / 일반
-  org TEXT NOT NULL DEFAULT '',         -- 교육기관
-  course TEXT NOT NULL,                 -- 교육과목
+  kind TEXT NOT NULL DEFAULT '',
+  org TEXT NOT NULL DEFAULT '',
+  course TEXT NOT NULL,
   days REAL NOT NULL DEFAULT 0,
   hours REAL NOT NULL DEFAULT 0,
   schedule_raw TEXT NOT NULL DEFAULT '',
   start_date TEXT,
   end_date TEXT,
-  month INTEGER NOT NULL DEFAULT 0,     -- 1~12, 0 = 일정 미정
+  month INTEGER NOT NULL DEFAULT 0,
   cost INTEGER NOT NULL DEFAULT 0,
-  result TEXT NOT NULL DEFAULT '',      -- 이수 / 취소 / 퇴사 / 육아휴직 / 다른교육으로대체 / (빈칸=예정·미입력)
+  result TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -110,16 +174,16 @@ CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS trainee_emails (       -- 교육 대상자 메일 주소 (앱 계정과 별개)
+CREATE TABLE IF NOT EXISTS trainee_emails (
   company TEXT NOT NULL,
   name TEXT NOT NULL,
   email TEXT NOT NULL,
   PRIMARY KEY (company, name)
 );
-CREATE TABLE IF NOT EXISTS training_mail_log (    -- 교육 참석 요청 메일 발송 이력
+CREATE TABLE IF NOT EXISTS training_mail_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   training_id INTEGER NOT NULL,
-  lead INTEGER NOT NULL,                          -- 교육 시작 며칠 전 메일인지
+  lead INTEGER NOT NULL,
   email TEXT NOT NULL,
   ok INTEGER NOT NULL DEFAULT 1,
   error TEXT NOT NULL DEFAULT '',
@@ -144,46 +208,64 @@ CREATE TABLE IF NOT EXISTS comments (
   body TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS login_attempts (
+  email TEXT NOT NULL,
+  ip TEXT NOT NULL DEFAULT '',
+  at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts (email, at);
 CREATE TABLE IF NOT EXISTS history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-  action TEXT NOT NULL,          -- created | updated | cancelled | restored | response
+  action TEXT NOT NULL,
   detail TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-`);
+`;
 
-// 기존 DB 마이그레이션: 일정 종류(개인/팀), 수정 권한, 담당자, 상태, 참석 응답
-// 소속 정보 (공장·팀·직책): 통합 일정관리의 공장/팀/구성원 필터에 사용
-const userCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-for (const col of ['site', 'dept', 'position']) {
-  if (!userCols.includes(col)) db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
-}
-const fileCols = db.prepare('PRAGMA table_info(attachments)').all().map((c) => c.name);
-if (!fileCols.includes('user_id')) db.exec('ALTER TABLE attachments ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
-if (!fileCols.includes('created_at')) db.exec('ALTER TABLE attachments ADD COLUMN created_at TEXT');
-const attCols = db.prepare('PRAGMA table_info(attendees)').all().map((c) => c.name);
-if (!attCols.includes('response')) db.exec("ALTER TABLE attendees ADD COLUMN response TEXT NOT NULL DEFAULT 'pending'");
-const eventCols = db.prepare('PRAGMA table_info(events)').all().map((c) => c.name);
-if (!eventCols.includes('assignee_id')) db.exec('ALTER TABLE events ADD COLUMN assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
-if (!eventCols.includes('urgent')) db.exec('ALTER TABLE events ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0');
-if (!eventCols.includes('importance')) db.exec('ALTER TABLE events ADD COLUMN importance INTEGER NOT NULL DEFAULT 1'); // 0 낮음 / 1 보통 / 2 높음
-if (!eventCols.includes('status')) db.exec("ALTER TABLE events ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
-if (!eventCols.includes('kind')) db.exec("ALTER TABLE events ADD COLUMN kind TEXT NOT NULL DEFAULT 'personal'");
-if (!eventCols.includes('edit_perm')) db.exec("ALTER TABLE events ADD COLUMN edit_perm TEXT NOT NULL DEFAULT 'owner'");
-db.exec("UPDATE events SET visibility = 'attendees' WHERE visibility = 'private'");
+// 이전 버전 DB 에 뒤늦게 추가된 열 (새 DB 에는 ALTER 로 만들어진다)
+const COLUMNS = [
+  ['users', 'site', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'dept', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'position', "TEXT NOT NULL DEFAULT ''"],
+  ['attachments', 'user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'],
+  ['attachments', 'created_at', 'TEXT'],
+  ['attendees', 'response', "TEXT NOT NULL DEFAULT 'pending'"],
+  ['events', 'assignee_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'],
+  ['events', 'urgent', 'INTEGER NOT NULL DEFAULT 0'],
+  ['events', 'importance', 'INTEGER NOT NULL DEFAULT 1'],
+  ['events', 'status', "TEXT NOT NULL DEFAULT 'active'"],
+  ['events', 'kind', "TEXT NOT NULL DEFAULT 'personal'"],
+  ['events', 'edit_perm', "TEXT NOT NULL DEFAULT 'owner'"],
+];
 
-export const uploadDir = path.join(dataDir, 'uploads');
-
-export function tx(fn) {
-  db.exec('BEGIN');
-  try {
-    const r = fn();
-    db.exec('COMMIT');
-    return r;
-  } catch (e) {
-    db.exec('ROLLBACK');
-    throw e;
+async function migrate() {
+  await client.execute('CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+  const cur = (await client.execute("SELECT value FROM schema_meta WHERE key = 'version'")).rows[0]?.value;
+  if (cur === SCHEMA_VERSION) return; // 이미 최신: 콜드 스타트에 쿼리 1번만 쓴다
+  await client.executeMultiple(SCHEMA);
+  for (const [table, col, ddl] of COLUMNS) {
+    const have = (await client.execute(`PRAGMA table_info(${table})`)).rows.map((r) => r.name);
+    if (have.includes(col)) continue;
+    try {
+      await client.execute(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+    } catch (e) {
+      if (!/duplicate column/i.test(String(e.message))) throw e; // 동시에 시작된 다른 인스턴스가 먼저 추가한 경우는 무시
+    }
   }
+  await client.execute("UPDATE events SET visibility = 'attendees' WHERE visibility = 'private'");
+  await client.execute({ sql: "INSERT INTO schema_meta (key, value) VALUES ('version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", args: [SCHEMA_VERSION] });
+}
+
+/** 요청을 받기 전에 한 번 기다리는 초기화 (스키마 준비). 실패하면 다음 요청에서 다시 시도한다. */
+let readyPromise = null;
+export function ensureReady() {
+  if (!readyPromise) {
+    readyPromise = migrate().catch((e) => {
+      readyPromise = null;
+      throw e;
+    });
+  }
+  return readyPromise;
 }

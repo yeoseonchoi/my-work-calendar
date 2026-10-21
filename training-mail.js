@@ -24,8 +24,8 @@ export const DEFAULTS = {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const isEmail = (s) => EMAIL_RE.test(String(s || '').trim());
 
-export function getSettings() {
-  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'training_mail'").get();
+export async function getSettings() {
+  const row = (await db.prepare("SELECT value FROM app_settings WHERE key = 'training_mail'").get());
   let saved = {};
   try {
     saved = row ? JSON.parse(row.value) : {};
@@ -38,11 +38,11 @@ export function getSettings() {
   if (merged.outro === OLD_OUTRO) merged.outro = DEFAULT_OUTRO;
   return merged;
 }
-function writeSettings(s) {
-  db.prepare("INSERT INTO app_settings (key, value) VALUES ('training_mail', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(s));
+async function writeSettings(s) {
+  (await db.prepare("INSERT INTO app_settings (key, value) VALUES ('training_mail', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(s)));
 }
-export function saveSettings(patch) {
-  const cur = getSettings();
+export async function saveSettings(patch) {
+  const cur = (await getSettings());
   const next = { ...cur };
   delete next.subject;
   if ('enabled' in patch) next.enabled = !!patch.enabled;
@@ -61,16 +61,16 @@ export function saveSettings(patch) {
   for (const addr of [...String(next.cc).split(/[,;\s]+/), next.replyTo].filter(Boolean)) {
     if (!isEmail(addr)) throw Object.assign(new Error(`메일 주소 형식이 올바르지 않습니다: ${addr}`), { status: 400 });
   }
-  writeSettings(next);
+  (await writeSettings(next));
   return next;
 }
-export function markRun(day) {
-  const s = getSettings();
-  writeSettings({ ...s, lastRun: day });
+export async function markRun(day) {
+  const s = (await getSettings());
+  (await writeSettings({ ...s, lastRun: day }));
 }
 
 // ───────── 대상 계산 ─────────
-const emailMap = () => new Map(db.prepare('SELECT company, name, email FROM trainee_emails').all().map((e) => [`${e.company}|${e.name}`, e.email]));
+const emailMap = async () => new Map((await db.prepare('SELECT company, name, email FROM trainee_emails').all()).map((e) => [`${e.company}|${e.name}`, e.email]));
 
 const dayName = '일월화수목금토';
 function dateRange(t) {
@@ -83,16 +83,17 @@ function dateRange(t) {
  * 오늘 보내야 할 메일 대상: 교육 시작일이 (오늘 + lead일) 인 건, 실적이 비어 있는 건(이수·취소·퇴사 등 제외),
  * 같은 (교육, lead) 로 이미 성공 발송한 건은 제외. 사람별로 한 통에 묶는다.
  */
-export function dueToday(settings = getSettings(), today = fmtDate(floatingNow())) {
+export async function dueToday(settings, today = fmtDate(floatingNow())) {
+  settings ??= await getSettings();
   const todayMs = parse(today);
-  const emails = emailMap();
+  const emails = (await emailMap());
   const sent = db.prepare('SELECT 1 FROM training_mail_log WHERE training_id = ? AND lead = ? AND ok = 1');
-  const rows = db.prepare("SELECT * FROM trainings WHERE start_date IS NOT NULL AND result = '' ORDER BY start_date, name").all();
+  const rows = (await db.prepare("SELECT * FROM trainings WHERE start_date IS NOT NULL AND result = '' ORDER BY start_date, name").all());
   const byPerson = new Map();
   for (const t of rows) {
     const days = Math.round((parse(t.start_date) - todayMs) / DAY);
     if (!settings.leads.includes(days)) continue;
-    if (sent.get(t.id, days)) continue;
+    if ((await sent.get(t.id, days))) continue;
     const key = `${t.company}|${t.name}`;
     if (!byPerson.has(key)) byPerson.set(key, { company: t.company, dept: t.dept, rank: t.rank, name: t.name, email: emails.get(key) || '', items: [] });
     byPerson.get(key).items.push({ id: t.id, lead: days, course: t.course, kind: t.kind, org: t.org, hours: t.hours, when: dateRange(t), start: t.start_date });
@@ -101,11 +102,12 @@ export function dueToday(settings = getSettings(), today = fmtDate(floatingNow()
 }
 
 /** 앞으로 예정된 발송 일정 (교육 시작일 - lead). 미리보기용 */
-export function upcomingSends(settings = getSettings(), today = fmtDate(floatingNow()), horizonDays = 45) {
+export async function upcomingSends(settings, today = fmtDate(floatingNow()), horizonDays = 45) {
+  settings ??= await getSettings();
   const todayMs = parse(today);
-  const emails = emailMap();
+  const emails = (await emailMap());
   const out = [];
-  const rows = db.prepare("SELECT * FROM trainings WHERE start_date IS NOT NULL AND result = '' ORDER BY start_date, name").all();
+  const rows = (await db.prepare("SELECT * FROM trainings WHERE start_date IS NOT NULL AND result = '' ORDER BY start_date, name").all());
   for (const t of rows) {
     for (const lead of settings.leads) {
       const sendMs = parse(t.start_date) - lead * DAY;
@@ -145,9 +147,10 @@ ${person.items.map((i) => `<tr><td style="padding:7px 9px;border:1px solid #d5dc
 
 // ───────── 발송 ─────────
 /** 오늘 대상에게 메일 발송. 이메일이 없는 사람은 건너뛰고 목록으로 알려준다. */
-export async function runDue({ settings = getSettings(), today = fmtDate(floatingNow()) } = {}) {
+export async function runDue({ settings: given, today = fmtDate(floatingNow()) } = {}) {
+  const settings = given ?? (await getSettings());
   if (!mailConfigured()) return { error: 'smtp', sent: 0, items: 0, failed: 0, noEmail: [] };
-  const due = dueToday(settings, today);
+  const due = (await dueToday(settings, today));
   const log = db.prepare('INSERT INTO training_mail_log (training_id, lead, email, ok, error) VALUES (?, ?, ?, ?, ?)');
   let sent = 0;
   let items = 0;
@@ -161,11 +164,11 @@ export async function runDue({ settings = getSettings(), today = fmtDate(floatin
     const { subject, text, html } = renderMail(p, settings);
     try {
       await sendMail(p.email, subject, text, { html, cc: settings.cc, replyTo: settings.replyTo });
-      for (const it of p.items) log.run(it.id, it.lead, p.email, 1, '');
+      for (const it of p.items) (await log.run(it.id, it.lead, p.email, 1, ''));
       sent++;
       items += p.items.length;
     } catch (err) {
-      for (const it of p.items) log.run(it.id, it.lead, p.email, 0, String(err.message).slice(0, 300));
+      for (const it of p.items) (await log.run(it.id, it.lead, p.email, 0, String(err.message).slice(0, 300)));
       failed++;
       console.error('교육 메일 발송 실패:', p.email, err.message);
     }
@@ -175,22 +178,23 @@ export async function runDue({ settings = getSettings(), today = fmtDate(floatin
 
 /** 스케줄러가 주기적으로 호출: 설정한 시각이 지났고 오늘 아직 안 보냈으면 한 번 발송 */
 export async function trainingMailTick(now = floatingNow()) {
-  const s = getSettings();
+  const s = (await getSettings());
   if (!s.enabled) return;
   const today = fmtDate(now);
   if (s.lastRun === today) return;
   if (new Date(now).toISOString().slice(11, 16) < s.sendTime) return;
   if (!mailConfigured()) return; // SMTP 설정 후 같은 날 다시 시도된다
   const r = await runDue({ settings: s, today });
-  markRun(today);
+  (await markRun(today));
   if (r.sent || r.failed || r.noEmail.length) console.log(`[교육 메일] 발송 ${r.sent}명(${r.items}건), 실패 ${r.failed}, 메일 미등록 ${r.noEmail.length}`);
 }
 
-export async function sendTestMail(to, settings = getSettings()) {
+export async function sendTestMail(to, given) {
+  const settings = given ?? (await getSettings());
   const sample = {
     name: '홍길동', company: '대신금속', dept: '교육 담당', rank: '', email: to,
     items: [{ id: 0, lead: 7, course: '(예시) 제조현장 원가절감 및 개선 실무', kind: '원가', org: '한국품질재단', hours: 14, when: '12/10(수) ~ 12/11(목)', start: '' }],
   };
   const { subject, text, html } = renderMail(sample, settings);
-  return sendMail(to, `[테스트] ${subject}`, text, { html });
+  return (await sendMail(to, `[테스트] ${subject}`, text, { html }));
 }

@@ -13,8 +13,11 @@ export const fmtTime = (ms) => new Date(ms).toISOString().slice(0, 16);
 export const fmtDate = (ms) => new Date(ms).toISOString().slice(0, 10);
 export const fmt = (ms, allDay) => (allDay ? fmtDate(ms) : fmtTime(ms));
 
+// 서버가 어느 시간대에서 돌든(Vercel 은 UTC) 같은 결과가 나오도록, 사용자 시간대(기본 한국 UTC+9)를 직접 더한다.
+// 일정은 시간대 없는 '벽시계 시각'으로 저장되므로 이 값과 직접 비교한다. 다른 나라에서 쓰려면 APP_TZ_OFFSET_MIN(분) 환경변수로 바꾼다.
+const TZ_OFFSET_MIN = Number.isFinite(Number(process.env.APP_TZ_OFFSET_MIN)) && process.env.APP_TZ_OFFSET_MIN !== '' ? Number(process.env.APP_TZ_OFFSET_MIN) : 540;
 export function floatingNow() {
-  return Date.now() - new Date().getTimezoneOffset() * 60000;
+  return Date.now() + TZ_OFFSET_MIN * 60000;
 }
 
 // 이벤트(또는 회차 덮어쓴 값)의 시작/끝 (끝은 배타적, ms)
