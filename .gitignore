@@ -1,0 +1,15 @@
+# 의존성 (npm install 로 다시 설치됨)
+node_modules/
+
+# 비밀번호가 들어 있는 설정 파일 — 절대 GitHub에 올리지 않습니다
+.env
+
+# 실제 데이터 (DB, 첨부파일) — 개인정보가 들어 있으므로 올리지 않습니다
+data/
+
+# 기타
+*.log
+.DS_Store
+Thumbs.db
+~$*
+*.xlsx

@@ -1,0 +1,26 @@
+{
+  "name": "work-calendar",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@fullcalendar/core": "^6.1.15",
+    "exceljs": "^4.4.0",
+    "express": "^5.3.0",
+    "fullcalendar": "^6.1.15",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.1.7",
+    "rrule": "^2.8.1"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}
