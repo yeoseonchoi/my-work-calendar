@@ -1,5 +1,6 @@
-import { createRequire } from 'node:module';
-const { RRule } = createRequire(import.meta.url)('rrule');
+// rrule 은 CommonJS 패키지라 기본 가져오기로 받는다. (createRequire 방식은 Vercel 의 파일 수집에서 빠질 수 있다)
+import rrulePkg from 'rrule';
+const { RRule } = rrulePkg;
 
 const DAY = 86400000;
 const WD = [RRule.SU, RRule.MO, RRule.TU, RRule.WE, RRule.TH, RRule.FR, RRule.SA];

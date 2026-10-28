@@ -12,13 +12,20 @@ const dataDir = process.env.DATA_DIR || path.join(import.meta.dirname, 'data');
 export const uploadDir = path.join(dataDir, 'uploads'); // 로컬 개발에서만 사용 (배포 시 첨부파일은 Vercel Blob)
 export const usingRemote = !!process.env.TURSO_DATABASE_URL;
 
-if (!usingRemote) fs.mkdirSync(dataDir, { recursive: true });
+// Vercel(서버리스)은 파일을 쓸 수 없고 로컬 DB 파일도 의미가 없다. Turso 연결 정보가 빠졌을 때 시작 단계에서 죽지 않고,
+// 요청을 받을 때 무엇이 빠졌는지 알려 주도록 한다. (/api/health 에 오류 문구가 나온다)
+const misconfigured = !usingRemote && !!process.env.VERCEL;
+if (!usingRemote && !misconfigured) fs.mkdirSync(dataDir, { recursive: true });
 const url = usingRemote ? process.env.TURSO_DATABASE_URL : pathToFileURL(path.join(dataDir, 'calendar.db')).href;
-const client = createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN || undefined });
+const client = misconfigured ? null : createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN || undefined });
+const useClient = () => {
+  if (!client) throw Object.assign(new Error('DB 연결 정보가 없습니다. Vercel 환경변수 TURSO_DATABASE_URL 과 TURSO_AUTH_TOKEN 을 확인하세요.'), { status: 503 });
+  return client;
+};
 
 // 트랜잭션 안에서 실행되는 모든 쿼리는 같은 트랜잭션 연결을 쓴다
 const als = new AsyncLocalStorage();
-const conn = () => als.getStore() ?? client;
+const conn = () => als.getStore() ?? useClient();
 
 const clean = (args) => args.map((a) => (a === undefined ? null : a));
 const toPlain = (rs) => rs.rows.map((r) => Object.fromEntries(rs.columns.map((c, i) => [c, r[i]])));
@@ -40,7 +47,7 @@ export const db = {
     if (c) {
       for (const s of sql.split(/;\s*(?:\n|$)/).map((x) => x.trim()).filter(Boolean)) await c.execute(s);
     } else {
-      await client.executeMultiple(sql);
+      await useClient().executeMultiple(sql);
     }
   },
 };
@@ -50,13 +57,13 @@ export async function batch(list) {
   if (!list.length) return [];
   const c = als.getStore();
   const stmts = list.map((s) => ({ sql: s.sql, args: clean(s.args || []) }));
-  return c ? c.batch(stmts) : client.batch(stmts, 'write');
+  return c ? c.batch(stmts) : useClient().batch(stmts, 'write');
 }
 
 /** 트랜잭션: fn 안에서 일어난 쿼리는 모두 함께 커밋되거나 함께 취소된다. */
 export async function tx(fn) {
   if (als.getStore()) return fn(); // 이미 트랜잭션 안이면 그대로 이어서 실행
-  const t = await client.transaction('write');
+  const t = await useClient().transaction('write');
   try {
     const r = await als.run(t, fn);
     await t.commit();
@@ -273,21 +280,21 @@ const COLUMNS = [
 ];
 
 async function migrate() {
-  await client.execute('CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-  const cur = (await client.execute("SELECT value FROM schema_meta WHERE key = 'version'")).rows[0]?.value;
+  await useClient().execute('CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+  const cur = (await useClient().execute("SELECT value FROM schema_meta WHERE key = 'version'")).rows[0]?.value;
   if (cur === SCHEMA_VERSION) return; // 이미 최신: 콜드 스타트에 쿼리 1번만 쓴다
-  await client.executeMultiple(SCHEMA);
+  await useClient().executeMultiple(SCHEMA);
   for (const [table, col, ddl] of COLUMNS) {
-    const have = (await client.execute(`PRAGMA table_info(${table})`)).rows.map((r) => r.name);
+    const have = (await useClient().execute(`PRAGMA table_info(${table})`)).rows.map((r) => r.name);
     if (have.includes(col)) continue;
     try {
-      await client.execute(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+      await useClient().execute(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
     } catch (e) {
       if (!/duplicate column/i.test(String(e.message))) throw e; // 동시에 시작된 다른 인스턴스가 먼저 추가한 경우는 무시
     }
   }
-  await client.execute("UPDATE events SET visibility = 'attendees' WHERE visibility = 'private'");
-  await client.execute({ sql: "INSERT INTO schema_meta (key, value) VALUES ('version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", args: [SCHEMA_VERSION] });
+  await useClient().execute("UPDATE events SET visibility = 'attendees' WHERE visibility = 'private'");
+  await useClient().execute({ sql: "INSERT INTO schema_meta (key, value) VALUES ('version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", args: [SCHEMA_VERSION] });
 }
 
 /** 요청을 받기 전에 한 번 기다리는 초기화 (스키마 준비). 실패하면 다음 요청에서 다시 시도한다. */
