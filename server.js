@@ -26,9 +26,12 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 // Vercel 에서는 public/ 폴더가 CDN 으로 직접 서비스되고 이 줄은 무시된다. (로컬 실행용)
 app.use(express.static(path.join(root, 'public')));
+// Vercel 에서는 화면 파일이 CDN 에서 제공되고 "/" 는 이 함수로 오므로, 첫 화면 파일로 보낸다.
+app.get('/', (_req, res) => res.redirect(302, '/index.html'));
 
 // 요청을 처리하기 전에 DB 스키마가 준비돼 있도록 기다린다 (서버리스 콜드 스타트 대응)
-app.use('/api', async (_req, _res, next) => {
+app.use('/api', async (req, _res, next) => {
+  if (req.path === '/health') return next(); // 상태 확인은 DB 가 안 돼도 오류 이유를 알려 줘야 하므로 건너뛴다
   try {
     await ensureReady();
     next();
