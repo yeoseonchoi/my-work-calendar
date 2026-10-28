@@ -1508,6 +1508,9 @@ app.get('/api/cron/tick', async (req, res) => {
 // 배포가 제대로 됐는지 확인용 (비밀 정보 없이 연결 상태만 알려준다)
 app.get('/api/health', async (_req, res) => {
   const out = { ok: true, storage: storageMode, smtp: mailConfigured(), cronSecret: !!process.env.CRON_SECRET, joinCode: !!process.env.JOIN_CODE, tzOffsetMin: Number(process.env.APP_TZ_OFFSET_MIN || 540) };
+  // DB 주소가 올바른 모양인지만 알려 준다 (주소·토큰 값은 노출하지 않는다)
+  const dbUrl = process.env.TURSO_DATABASE_URL || '';
+  out.dbUrlCheck = dbUrl ? { scheme: dbUrl.split(':')[0].slice(0, 8), tursoHost: /^[a-z0-9+.-]+:\/\/[^/\s"']+\.turso\.io\/?$/i.test(dbUrl), clean: dbUrl === dbUrl.trim() && !/["'\s]/.test(dbUrl), tokenSet: !!process.env.TURSO_AUTH_TOKEN } : 'TURSO_DATABASE_URL 없음';
   try {
     await ensureReady();
     out.users = (await db.prepare('SELECT COUNT(*) AS n FROM users').get()).n;

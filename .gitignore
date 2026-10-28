@@ -13,3 +13,6 @@ data/
 Thumbs.db
 ~$*
 *.xlsx
+
+.vercel
+.env.local
