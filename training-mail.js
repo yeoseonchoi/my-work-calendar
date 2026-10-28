@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { sendMail, mailConfigured } from './mailer.js';
+import { sendMail, mailConfigured, COPY_TO_SENDER } from './mailer.js';
 import { floatingNow, fmtDate, parse, DAY } from './recur.js';
 
 // ───────── 설정 ─────────
@@ -163,7 +163,7 @@ export async function runDue({ settings: given, today = fmtDate(floatingNow()) }
     }
     const { subject, text, html } = renderMail(p, settings);
     try {
-      await sendMail(p.email, subject, text, { html, cc: settings.cc, replyTo: settings.replyTo });
+      await sendMail(p.email, subject, text, { html, cc: settings.cc, bcc: COPY_TO_SENDER, replyTo: settings.replyTo });
       for (const it of p.items) await log.run(it.id, it.lead, p.email, 1, '');
       sent++;
       items += p.items.length;
@@ -187,6 +187,63 @@ export async function trainingMailTick(now = floatingNow()) {
   const r = await runDue({ settings: s, today });
   await markRun(today);
   if (r.sent || r.failed || r.noEmail.length) console.log(`[교육 메일] 발송 ${r.sent}명(${r.items}건), 실패 ${r.failed}, 메일 미등록 ${r.noEmail.length}`);
+}
+
+// ───────── 미이수(실적 미입력) 안내 ─────────
+/** 교육이 끝났는데 실적이 비어 있는 사람 목록 (오늘 이미 안내한 교육은 제외). 사람별로 묶는다. */
+export async function incompleteToday(today = fmtDate(floatingNow())) {
+  const emails = await emailMap();
+  const reminded = new Set((await db.prepare('SELECT training_id FROM training_remind_log WHERE sent_on = ?').all(today)).map((r) => r.training_id));
+  const rows = await db
+    .prepare("SELECT * FROM trainings WHERE result = '' AND start_date IS NOT NULL AND COALESCE(NULLIF(end_date, ''), start_date) < ? ORDER BY start_date, name")
+    .all(today);
+  const byPerson = new Map();
+  for (const t of rows) {
+    if (reminded.has(t.id)) continue;
+    const key = `${t.company}|${t.name}`;
+    if (!byPerson.has(key)) byPerson.set(key, { company: t.company, dept: t.dept, rank: t.rank, name: t.name, email: emails.get(key) || '', items: [] });
+    byPerson.get(key).items.push({ id: t.id, course: t.course, kind: t.kind, org: t.org, hours: t.hours, when: dateRange(t) });
+  }
+  return [...byPerson.values()];
+}
+
+function renderRemind(p) {
+  const subject = '교육 이수 확인 요청의 건';
+  const intro = `안녕하세요, ${p.name}님.\n인사총무팀입니다.\n\n아래 교육이 종료되었으나 이수 결과가 확인되지 않았습니다. 이수하셨다면 수료증(이수증)을 인사총무팀으로 제출해 주시고, 참석하지 못하셨다면 사유를 알려 주시기 바랍니다.`;
+  const lines = p.items.map((i) => `• ${i.course}\n   일정: ${i.when}${i.org ? ` / 교육기관: ${i.org}` : ''}${i.hours ? ` / ${i.hours}시간` : ''}`);
+  const text = [intro, '', ...lines, '', '감사합니다.'].join('\n');
+  const html = `<div style="font-family:'Malgun Gothic',Arial,sans-serif;font-size:14px;color:#222;line-height:1.6">
+<p>${esc(intro).replace(/\n/g, '<br>')}</p>
+<table style="border-collapse:collapse;width:100%;max-width:640px;font-size:13px">
+<tr style="background:#eef2fb"><th style="padding:7px 9px;text-align:left;border:1px solid #d5dcee">교육과목</th><th style="padding:7px 9px;text-align:left;border:1px solid #d5dcee">일정</th><th style="padding:7px 9px;text-align:left;border:1px solid #d5dcee">교육기관</th></tr>
+${p.items.map((i) => `<tr><td style="padding:7px 9px;border:1px solid #d5dcee"><b>${esc(i.course)}</b></td><td style="padding:7px 9px;border:1px solid #d5dcee">${esc(i.when)}</td><td style="padding:7px 9px;border:1px solid #d5dcee">${esc(i.org)}</td></tr>`).join('\n')}
+</table><p>감사합니다.</p></div>`;
+  return { subject, text, html };
+}
+
+/** 미이수자에게 확인 요청 메일 발송. 같은 교육은 하루에 한 번만 보낸다. */
+export async function remindIncomplete(today = fmtDate(floatingNow())) {
+  const settings = await getSettings();
+  const people = await incompleteToday(today);
+  const log = db.prepare('INSERT OR REPLACE INTO training_remind_log (training_id, sent_on, email, ok) VALUES (?, ?, ?, ?)');
+  const result = { sent: 0, items: 0, failed: 0, noEmail: [] };
+  for (const p of people) {
+    if (!p.email) {
+      result.noEmail.push(p.name);
+      continue;
+    }
+    const { subject, text, html } = renderRemind(p);
+    try {
+      await sendMail(p.email, subject, text, { html, cc: settings.cc, bcc: COPY_TO_SENDER, replyTo: settings.replyTo });
+      for (const it of p.items) await log.run(it.id, today, p.email, 1);
+      result.sent++;
+      result.items += p.items.length;
+    } catch (err) {
+      result.failed++;
+      console.error('교육 이수 확인 메일 발송 실패:', p.email, err.message);
+    }
+  }
+  return result;
 }
 
 export async function sendTestMail(to, given) {

@@ -41,6 +41,8 @@ function toast(msg, isErr = false) {
 }
 
 async function api(url, { method = 'GET', body } = {}) {
+  // 서버 없는 버전(GitHub Pages)에서는 요청을 브라우저 안의 localapi.js 가 처리한다
+  if (window.STATIC_MODE) return window.localApi(url, { method, body });
   const init = { method, headers: {} };
   if (body instanceof FormData) init.body = body;
   else if (body !== undefined) {
@@ -98,6 +100,11 @@ $('#auth-form').onsubmit = async (e) => {
 };
 $('#btn-logout').onclick = async () => {
   await api('/api/logout', { method: 'POST' });
+  try {
+    sessionStorage.removeItem('moodAsked'); // 다음에 로그인하면 오늘의 기분을 다시 묻는다
+  } catch {
+    // 저장소를 못 써도 로그아웃은 계속한다
+  }
   showAuth();
 };
 
@@ -121,104 +128,100 @@ $('#pw-form').onsubmit = async (e) => {
   }
 };
 
-async function renderAdminList() {
-  users = await api('/api/users');
-  const list = $('#admin-list');
-  list.replaceChildren(
-    ...users.map((u) => {
-      const org = [u.site, u.dept, u.position].filter(Boolean).join(' / ');
-      const li = el('li', {}, el('span', { textContent: `${u.name} (${u.email})${u.role === 'admin' ? ' · 관리자' : ''}${org ? ' · ' + org : ''}` }));
-      li.style.flexWrap = 'wrap';
-      const edit = el('button', { type: 'button', className: 'btn', textContent: '소속 수정' });
-      edit.onclick = async () => {
-        const v = prompt(`${u.name}님의 공장, 팀, 직책을 쉼표(,)로 구분해 입력하세요.\n예) 미산, 인사총무, 선임`, [u.site, u.dept, u.position].join(', '));
-        if (v === null) return;
-        const [site = '', dept = '', position = ''] = v.split(',').map((s) => s.trim());
-        try {
-          await api(`/api/users/${u.id}/profile`, { method: 'PUT', body: { site, dept, position } });
-          await renderAdminList();
-          renderFilters();
-          refresh();
-          toast('소속 정보를 저장했습니다.');
-        } catch (err) {
-          toast(err.message, true);
-        }
-      };
-      const reset = el('button', { type: 'button', className: 'btn', textContent: '비밀번호 재설정' });
-      reset.onclick = async () => {
-        if (!confirm(`${u.name}님의 비밀번호를 재설정할까요?`)) return;
-        try {
-          const { password } = await api(`/api/users/${u.id}/reset-password`, { method: 'POST' });
-          prompt(`${u.name}님의 임시 비밀번호입니다. 복사해서 전달하세요.`, password);
-        } catch (err) {
-          toast(err.message, true);
-        }
-      };
-      li.append(el('span', { className: 'spacer' }), edit, reset);
-      if (u.id !== me.id) {
-        const del = el('button', { type: 'button', className: 'btn danger', textContent: '삭제' });
-        del.onclick = async () => {
-          if (!confirm(`${u.name}님을 삭제할까요?\n이 팀원이 등록한 일정과 첨부파일도 모두 삭제됩니다.`)) return;
-          try {
-            await api(`/api/users/${u.id}`, { method: 'DELETE' });
-            await renderAdminList();
-            renderFilters();
-            refresh();
-            toast('삭제되었습니다.');
-          } catch (err) {
-            toast(err.message, true);
-          }
-        };
-        li.append(del);
-      }
-      return li;
+// ---------- 테마 색상 ----------
+const THEMES = ['lavender', 'mint', 'coral', 'sunny', 'sky', 'rose', 'ruby'];
+function applyTheme(t) {
+  if (!THEMES.includes(t)) t = 'lavender';
+  document.documentElement.dataset.theme = t;
+  try {
+    localStorage.setItem('theme', t);
+  } catch {
+    // 저장이 막혀 있어도 이번 화면에는 적용된다
+  }
+  document.querySelectorAll('#theme-list button').forEach((b) => b.classList.toggle('on', b.dataset.theme === t));
+}
+$('#theme-list').onclick = (e) => {
+  const b = e.target.closest('button');
+  if (b) applyTheme(b.dataset.theme);
+};
+applyTheme(document.documentElement.dataset.theme);
+
+// ---------- 오늘의 기분 → 색상 자동 적용 ----------
+// 접속(로그인)할 때마다 한 번 묻고, 고른 기분에 맞는 색 테마를 적용한다. 같은 접속 중 새로고침에는 다시 묻지 않는다.
+const MOODS = [
+  { key: 'joy', emoji: '😄', label: '즐거움', sub: '따뜻한 코랄', theme: 'coral', a: '#f06454', b: '#ffb7a8' },
+  { key: 'angry', emoji: '😡', label: '화남', sub: '강렬한 레드', theme: 'ruby', a: '#d6334a', b: '#f6a3ad' },
+  { key: 'calm', emoji: '😌', label: '평온함', sub: '맑은 민트', theme: 'mint', a: '#0f9d8a', b: '#7fe0cf' },
+  { key: 'tired', emoji: '😴', label: '피곤함', sub: '편안한 스카이', theme: 'sky', a: '#2f80ed', b: '#9fd0fb' },
+  { key: 'power', emoji: '💪', label: '의욕이 넘침', sub: '활기찬 옐로', theme: 'sunny', a: '#e8850a', b: '#fcd98a' },
+  { key: 'ok', emoji: '🙂', label: '보통', sub: '차분한 라벤더', theme: 'lavender', a: '#7a6cf0', b: '#c4b5fd' },
+];
+const store = {
+  get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* 저장이 막혀 있어도 화면에는 적용된다 */ } },
+};
+const todayKey = () => dateStr(new Date());
+
+function paintMoodChip() {
+  const m = MOODS.find((x) => x.key === store.get('mood') && store.get('moodDate') === todayKey());
+  $('#mood-chip').textContent = m ? `${m.emoji} 오늘의 기분: ${m.label} · 바꾸기` : '🎭 오늘의 기분 고르기';
+}
+
+function pickMood(m) {
+  store.set('mood', m.key);
+  store.set('moodDate', todayKey());
+  applyTheme(m.theme);
+  paintMoodChip();
+  $('#mood-dialog').close();
+  toast(`${m.emoji} ${m.label} — ${m.sub} 색으로 꾸몄어요.`);
+}
+
+function openMood() {
+  if (document.querySelector('dialog[open]')) return;
+  $('#mood-grid').replaceChildren(
+    ...MOODS.map((m) => {
+      const b = el('button', { type: 'button' }, el('span', { className: 'em', textContent: m.emoji }), el('b', { textContent: m.label }), el('small', { textContent: m.sub }));
+      b.style.setProperty('--a', m.a);
+      b.style.setProperty('--b', m.b);
+      b.onclick = () => pickMood(m);
+      return b;
     }),
   );
+  $('#mood-dialog').showModal();
 }
-$('#btn-admin').onclick = async () => {
-  try {
-    await renderAdminList();
-    $('#admin-dialog').showModal();
-  } catch (err) {
-    toast(err.message, true);
-  }
-};
-$('#admin-close').onclick = () => $('#admin-dialog').close();
 
-// ---------- 설정 (내 정보: 공장·팀·직책) ----------
+// 로그인 직후(또는 새 접속)에 한 번만 묻는다
+function askMoodOnce() {
+  let asked = false;
+  try {
+    asked = !!sessionStorage.getItem('moodAsked');
+    sessionStorage.setItem('moodAsked', '1');
+  } catch {
+    asked = false;
+  }
+  paintMoodChip();
+  if (!asked) openMood();
+}
+$('#mood-skip').onclick = () => $('#mood-dialog').close();
+$('#mood-chip').onclick = openMood;
+$('#mood-again').onclick = () => {
+  $('#settings-dialog').close();
+  openMood();
+};
+
+// ---------- 설정 (내 정보 보기 · 비밀번호 변경) ----------
 $('#btn-settings').onclick = () => {
-  const f = $('#settings-form');
-  f.elements.site.value = me.site || '';
-  f.elements.dept.value = me.dept || '';
-  f.elements.position.value = me.position || '';
-  $('#settings-who').textContent = `${me.name} · ${me.email}`;
+  $('#settings-who').textContent = [me.name, me.email].filter(Boolean).join(' · ');
   $('#settings-dialog').showModal();
 };
 $('#settings-close').onclick = () => $('#settings-dialog').close();
-$('#settings-form').onsubmit = async (e) => {
-  e.preventDefault();
-  const f = Object.fromEntries(new FormData(e.target));
-  try {
-    await api('/api/me/profile', { method: 'PUT', body: f });
-    me = await api('/api/me');
-    users = await api('/api/users');
-    paintMe();
-    renderFilters();
-    refresh();
-    $('#settings-dialog').close();
-    toast('내 정보를 저장했습니다.');
-  } catch (err) {
-    toast(err.message, true);
-  }
-};
 
 // ---------- 시작 ----------
 function paintMe() {
   $('#me-name').textContent = me.name;
-  $('#me-sub').textContent = [me.dept, me.position, me.role === 'admin' ? '관리자' : ''].filter(Boolean).join(' · ') || (me.role === 'admin' ? '관리자' : '팀원');
+  $('#me-sub').textContent = me.email;
   $('#me-avatar').textContent = me.name.slice(0, 1);
   $('#me-avatar').style.background = userColor(me.id);
-  $('#btn-admin').classList.toggle('hidden', me.role !== 'admin');
 }
 
 async function start() {
@@ -249,6 +252,8 @@ async function start() {
   dashWeek = 0;
   dashDay = midnight(new Date());
   setView('dash');
+  openFromHash(); // 일정 링크(#event=...)로 들어왔으면 그 일정을 바로 연다
+  askMoodOnce();
 }
 
 // 분류 색상 칩: 눌러서 분류별로 켜고 끈다
@@ -286,53 +291,9 @@ function userPasses(id) {
   return (!filt.site || u.site === filt.site) && (!filt.dept || u.dept === filt.dept) && (!filt.member || String(u.id) === String(filt.member));
 }
 
-function renderFilters() {
-  const sites = [...new Set(users.map((u) => u.site).filter(Boolean))];
-  const depts = [...new Set(users.filter((u) => !filt.site || u.site === filt.site).map((u) => u.dept).filter(Boolean))];
-  const fill = (sel, first, values, cur) => {
-    sel.replaceChildren(el('option', { value: '', textContent: first }), ...values.map(([v, label]) => el('option', { value: v, textContent: label })));
-    sel.value = values.some(([v]) => String(v) === String(cur)) ? cur : '';
-    return sel.value;
-  };
-  filt.site = fill($('#flt-site'), '전체 공장', sites.map((s) => [s, s]), filt.site);
-  filt.dept = fill($('#flt-dept'), '전체 팀', depts.map((d) => [d, d]), filt.dept);
-  filt.member = fill($('#flt-member'), '전체 구성원', usersInScope().map((u) => [u.id, u.name]), filt.member);
-  renderMembers();
-}
-for (const k of ['site', 'dept', 'member']) {
-  $(`#flt-${k}`).onchange = (e) => {
-    filt[k] = e.target.value;
-    renderFilters();
-    refresh();
-  };
-}
+// 혼자 쓰므로 공장·팀·구성원 필터는 없다 (일정 표시 조건은 userPasses 에서 항상 통과)
+function renderFilters() {}
 
-// 오른쪽 "구성원 일정 보기": 구성원을 누르면 그 사람 일정만 보고, 다시 누르면 전체로 돌아간다
-function renderMembers() {
-  const box = $('#member-list');
-  box.replaceChildren();
-  for (const u of usersInScope()) {
-    const av = el('span', { className: 'avatar', textContent: u.name.slice(0, 1) });
-    av.style.background = userColor(u.id);
-    const row = el('button', { type: 'button', className: `member${String(filt.member) === String(u.id) ? ' on' : ''}` },
-      av,
-      el('span', { className: 'mt' }, el('b', { textContent: u.name + (u.id === me.id ? ' (나)' : '') }), el('small', { textContent: [orgText(u), u.site].filter(Boolean).join(' · ') || '소속 미등록' })));
-    row.onclick = () => {
-      filt.member = String(filt.member) === String(u.id) ? '' : String(u.id);
-      renderFilters();
-      refresh();
-    };
-    box.append(row);
-  }
-  if (!box.children.length) box.append(el('p', { className: 'muted small', textContent: '조건에 맞는 구성원이 없습니다.' }));
-}
-
-for (const k of ['personal', 'team']) {
-  $(`#chk-${k}`).onchange = (e) => {
-    kindShown[k] = e.target.checked;
-    refresh();
-  };
-}
 // ---------- 내부 알림 ----------
 let lastUnread = null;
 async function loadNotifications(poll = false) {
@@ -431,7 +392,7 @@ function decorate(r) {
   x.rawTitle = r.title;
   const mark =
     (x.status === 'cancelled' ? '🚫 ' : x.status === 'done' ? '✅ ' : '') + (x.urgent ? '🔥 ' : '') + (x.importance === 2 ? '⭐ ' : '') +
-    (x.kind === 'team' ? '👥 ' : '') + (x.visibility !== 'team' ? '🔒 ' : '') + (x.recur ? '🔁 ' : '');
+    (x.recur ? '🔁 ' : '');
   const cs = CAT_STYLE[x.category] || CAT_STYLE['기타'];
   return { ...r, color: cs.bar, backgroundColor: cs.bg, borderColor: cs.bg, textColor: cs.fg, title: `${mark}${x.category === '기타' ? '' : `[${x.category}] `}${r.title}` };
 }
@@ -504,14 +465,11 @@ function agendaItem(e, { dateLabel = false } = {}) {
   const en = e.end ? toDate(e.end) : s;
   let when = e.allDay ? '종일' : `${pad(s.getHours())}:${pad(s.getMinutes())} ~ ${pad(en.getHours())}:${pad(en.getMinutes())}`;
   if (dateLabel) when = `${s.getMonth() + 1}/${s.getDate()} (${DAYNAMES[s.getDay()]})\n${when}`;
-  const meta = el('span', { className: 'meta' }, el('span', { className: `kind-badge ${x.kind}`, textContent: x.kind === 'team' ? '팀' : '개인' }));
+  const meta = el('span', { className: 'meta' });
   if (x.importance === 2) meta.prepend(el('span', { className: 'flag-star', textContent: '⭐ 중요' }));
   if (x.urgent) meta.prepend(el('span', { className: 'flag-urgent', textContent: '🔥 긴급' }));
   if (x.status === 'done') meta.prepend(el('span', { className: 'flag-done', textContent: '✅ 종료' }));
   if (x.status === 'cancelled') meta.prepend(el('span', { className: 'status-badge', textContent: '취소됨' }));
-  const owner = users.find((u) => u.id === x.ownerId);
-  meta.append(el('span', { textContent: [x.ownerName, owner && orgText(owner), owner?.site].filter(Boolean).join(' · ') }));
-  if (x.assigneeName) meta.append(el('span', { textContent: `담당 ${x.assigneeName}` }));
   if (x.location) meta.append(el('span', { textContent: `📍 ${x.location}` }));
   if (x.commentCount) meta.append(el('span', { textContent: `💬 ${x.commentCount}` }));
   if (x.attachments.length) meta.append(el('span', { textContent: `📎 ${x.attachments.length}` }));
@@ -700,11 +658,18 @@ function setView(v) {
   $('#dash-view').classList.toggle('hidden', v !== 'dash');
   $('#cal-view').classList.toggle('hidden', v !== 'cal');
   $('#edu-view').classList.toggle('hidden', v !== 'edu');
+  $('#exp-view').classList.toggle('hidden', v !== 'exp');
+  $('#tpl-view').classList.toggle('hidden', v !== 'tpl');
+  $('#board-view').classList.toggle('hidden', v !== 'board');
+  if (v === 'board') loadBoard();
   if (v === 'dash') {
     renderDash();
-    renderNotes();
   } else if (v === 'edu') {
     loadTrainings();
+  } else if (v === 'exp') {
+    loadExp();
+  } else if (v === 'tpl') {
+    loadTpl();
   } else if (cal) {
     setTimeout(() => {
       cal.updateSize();
@@ -734,7 +699,466 @@ async function renderDash() {
   if (seq !== dashSeq) return;
   dashItems = items;
   paintDash();
-  renderActivity();
+  renderDashEdu();
+  renderDashExp();
+  paintQuick();
+}
+
+// ---------- 만료일 관리 (계약·보험·점검 등) ----------
+const EXP = { rows: [], cat: '', q: '' };
+const EXP_CATS = ['계약', '보험', '점검', '검사', '인허가', '임대차', '기타'];
+const daysTo = (s) => Math.round((midnight(toDate(s)) - midnight(new Date())) / 86400000);
+const ddayText = (d) => (d === 0 ? '오늘 만료' : d > 0 ? `D-${d}` : `${-d}일 지남`);
+const ddayCls = (d) => (d < 0 ? 'd-over' : d <= 7 ? 'd-hot' : d <= 30 ? 'd-warn' : 'd-ok');
+const dchip = (d) => el('span', { className: `dchip ${ddayCls(d)}`, textContent: ddayText(d) });
+let expEditing = null;
+
+async function loadExp() {
+  $('#exp-add').classList.toggle('hidden', me.role !== 'admin');
+  try {
+    EXP.rows = await api('/api/expirations');
+  } catch (e) {
+    return toast(e.message, true);
+  }
+  const cats = [...new Set([...EXP_CATS, ...EXP.rows.map((r) => r.category).filter(Boolean)])];
+  $('#exp-cat').replaceChildren(el('option', { value: '', textContent: '전체 구분' }), ...cats.map((c) => el('option', { value: c, textContent: c })));
+  $('#exp-cat').value = EXP.cat;
+  renderExp();
+}
+
+function renderExp() {
+  const q = EXP.q.trim().toLowerCase();
+  const rows = EXP.rows.filter((r) => (!EXP.cat || r.category === EXP.cat) && (!q || `${r.name} ${r.owner} ${r.memo}`.toLowerCase().includes(q)));
+  const over = rows.filter((r) => daysTo(r.expire_date) < 0).length;
+  const soon = rows.filter((r) => { const d = daysTo(r.expire_date); return d >= 0 && d <= 30; }).length;
+  const kpi = (cls, label, v, unit = '') => el('span', { className: `kpi ${cls}` }, label, el('b', { textContent: v }), unit);
+  $('#exp-kpi').replaceChildren(kpi('k-today', '전체 ', rows.length, '건'), kpi('k-wait', '30일 내 만료 ', soon, '건'), kpi('k-urgent', '만료됨 ', over, '건'));
+  const body = $('#exp-body');
+  body.replaceChildren();
+  if (!EXP.rows.length) {
+    return body.append(el('div', { className: 'edu-empty' },
+      el('b', { textContent: '등록된 만료 항목이 없습니다.' }),
+      el('p', { className: 'muted', textContent: me.role === 'admin' ? '오른쪽 위 "+ 항목 추가"로 계약·보험·점검·검사처럼 기한이 있는 항목을 등록하면 만료 전에 알려 드립니다.' : '관리자가 항목을 등록하면 여기에 표시됩니다.' })));
+  }
+  if (!rows.length) return body.append(el('div', { className: 'edu-empty' }, el('b', { textContent: '조건에 맞는 항목이 없습니다.' })));
+  const head = ['구분', '항목', '만료일', '남은 기간', '담당', '알림', '메모'];
+  if (me.role === 'admin') head.push('');
+  const tbl = el('table', { className: 'edu-table' }, el('thead', {}, el('tr', {}, ...head.map((h) => el('th', { textContent: h })))));
+  const tb = el('tbody');
+  for (const r of rows) {
+    const d = daysTo(r.expire_date);
+    const tr = el('tr', {},
+      el('td', { className: 'nw', textContent: r.category }),
+      el('td', {}, el('b', { textContent: r.name })),
+      el('td', { className: 'nw', textContent: r.expire_date }),
+      el('td', { className: 'nw' }, dchip(d)),
+      el('td', { className: 'nw', textContent: r.owner }),
+      el('td', { className: 'nw', textContent: `${r.alert_days.split(',').join('·')}일 전` }),
+      el('td', { textContent: r.memo }),
+    );
+    if (me.role === 'admin') tr.append(el('td', { className: 'nw' }, el('button', { type: 'button', className: 'certbtn', textContent: '수정', onclick: () => openExp(r) })));
+    tb.append(tr);
+  }
+  tbl.append(tb);
+  body.append(el('div', { className: 'edu-table-wrap' }, tbl));
+}
+
+function openExp(row) {
+  expEditing = row || null;
+  const f = $('#exp-form');
+  f.reset();
+  const cats = row?.category && !EXP_CATS.includes(row.category) ? [...EXP_CATS, row.category] : EXP_CATS;
+  $('#exp-category').replaceChildren(...cats.map((c) => el('option', { value: c, textContent: c })));
+  $('#exp-dlg-title').textContent = row ? '만료 항목 수정' : '만료 항목 추가';
+  $('#exp-error').textContent = '';
+  $('#exp-del').classList.toggle('hidden', !row);
+  const e = f.elements; // form.name 은 폼 자신의 이름이라 elements 로 접근한다
+  if (row) {
+    e.category.value = row.category || '기타';
+    e.name.value = row.name;
+    e.expire_date.value = row.expire_date;
+    e.owner.value = row.owner;
+    e.alert_days.value = row.alert_days;
+    e.memo.value = row.memo;
+  } else {
+    e.alert_days.value = '60,30,7';
+  }
+  $('#exp-dialog').showModal();
+}
+$('#exp-add').onclick = () => openExp(null);
+$('#exp-cancel').onclick = () => $('#exp-dialog').close();
+$('#exp-cat').onchange = (e) => { EXP.cat = e.target.value; renderExp(); };
+$('#exp-q').oninput = (e) => { EXP.q = e.target.value; renderExp(); };
+$('#exp-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  try {
+    await api(expEditing ? `/api/expirations/${expEditing.id}` : '/api/expirations', { method: expEditing ? 'PUT' : 'POST', body: f });
+    $('#exp-dialog').close();
+    toast('저장되었습니다.');
+    loadExp();
+  } catch (err) {
+    $('#exp-error').textContent = err.message;
+  }
+};
+$('#exp-del').onclick = async () => {
+  if (!expEditing || !confirm(`"${expEditing.name}" 항목을 삭제할까요?`)) return;
+  try {
+    await api(`/api/expirations/${expEditing.id}`, { method: 'DELETE' });
+    $('#exp-dialog').close();
+    loadExp();
+  } catch (err) {
+    $('#exp-error').textContent = err.message;
+  }
+};
+
+// 대시보드: 60일 안에 만료되는 항목 (이미 지난 항목 포함)
+async function renderDashExp() {
+  let rows;
+  try {
+    rows = await api('/api/expirations');
+  } catch {
+    return;
+  }
+  const ul = $('#dash-exp-list');
+  const list = rows.map((r) => ({ r, d: daysTo(r.expire_date) })).filter((x) => x.d <= 60).sort((a, b) => a.d - b.d).slice(0, 7);
+  ul.replaceChildren();
+  if (!rows.length) ul.append(el('li', { className: 'empty-msg', textContent: '등록된 만료 항목이 없습니다. ⏰ 만료일 관리에서 계약·보험·점검을 등록해 보세요.' }));
+  else if (!list.length) ul.append(el('li', { className: 'empty-msg', textContent: '60일 안에 만료되는 항목이 없습니다 👍' }));
+  for (const { r, d } of list) {
+    const li = el('li', {}, el('span', { className: 'tm' }, dchip(d)), el('span', { textContent: `${r.category ? `[${r.category}] ` : ''}${r.name}` }));
+    li.onclick = () => setView('exp');
+    ul.append(li);
+  }
+}
+$('#exp-open').onclick = () => setView('exp');
+
+// ---------- 업무 템플릿 ----------
+const TPL = { rows: [] };
+let tplEditing = null;
+let tplApplying = null;
+const offText = (o) => (o === 0 ? '기준일' : o < 0 ? `${-o}일 전` : `${o}일 후`);
+const TPL_SAMPLES = [
+  { name: '월말 마감', items: [{ title: '경비 증빙 취합', offset: -5 }, { title: '고지서 납부 확인', offset: -3 }, { title: '월 마감 보고', offset: 0, urgent: true }] },
+  { name: '신규 입사자 준비', items: [{ title: 'PC·계정 준비', offset: -3 }, { title: '사원증·비품 준비', offset: -2 }, { title: '입사 서류 안내', offset: -1 }, { title: '입사 첫날 오리엔테이션', offset: 0, urgent: true }, { title: '4대보험 취득 신고', offset: 3 }] },
+  { name: '퇴사 처리', items: [{ title: '퇴직 서류 안내', offset: -7 }, { title: '비품·계정 회수', offset: -1 }, { title: '4대보험 상실 신고', offset: 0, urgent: true }, { title: '퇴직금 정산', offset: 14 }] },
+];
+
+async function loadTpl() {
+  try {
+    TPL.rows = await api('/api/templates');
+  } catch (e) {
+    return toast(e.message, true);
+  }
+  renderTpl();
+}
+
+function renderTpl() {
+  const box = $('#tpl-body');
+  box.replaceChildren();
+  if (!TPL.rows.length) {
+    return box.append(el('div', { className: 'edu-empty' },
+      el('b', { textContent: '저장된 템플릿이 없습니다.' }),
+      el('p', { className: 'muted', textContent: '자주 하는 업무 절차를 템플릿으로 만들어 두면 기준일만 정해서 한 번에 일정으로 등록할 수 있습니다.' }),
+      el('button', { type: 'button', className: 'btn', textContent: '예시 템플릿 불러오기 (월말 마감·입사·퇴사)', onclick: loadTplSamples })));
+  }
+  for (const t of TPL.rows) {
+    box.append(el('article', { className: 'tpl-card' },
+      el('h3', { textContent: t.name }),
+      el('span', { className: 'muted small', textContent: `할 일 ${t.items.length}개` }),
+      el('ol', {}, ...t.items.slice(0, 6).map((i) => el('li', { textContent: `${i.urgent ? '🔥 ' : ''}${i.title} (${offText(i.offset)})` }))),
+      t.items.length > 6 ? el('span', { className: 'muted small', textContent: `외 ${t.items.length - 6}개` }) : '',
+      el('div', { className: 'tpl-btns' },
+        el('button', { type: 'button', className: 'btn primary', textContent: '적용', onclick: () => openTplApply(t) }),
+        el('button', { type: 'button', className: 'btn', textContent: '수정', onclick: () => openTplEditor(t) }),
+        el('button', { type: 'button', className: 'btn danger', textContent: '삭제', onclick: () => delTpl(t) }))));
+  }
+}
+
+async function loadTplSamples() {
+  try {
+    for (const t of TPL_SAMPLES) await api('/api/templates', { method: 'POST', body: t });
+    toast('예시 템플릿을 불러왔습니다.');
+    loadTpl();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function delTpl(t) {
+  if (!confirm(`"${t.name}" 템플릿을 삭제할까요?\n(이미 등록한 일정은 그대로 남습니다)`)) return;
+  try {
+    await api(`/api/templates/${t.id}`, { method: 'DELETE' });
+    loadTpl();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+function tplRow(i = { title: '', offset: 0, urgent: false }) {
+  const row = el('div', { className: 'tpl-row' },
+    el('input', { className: 't-title', placeholder: '할 일', maxLength: 100, value: i.title }),
+    el('input', { className: 't-off', type: 'number', title: '기준일로부터 N일 (음수 = 이전)', value: String(i.offset) }),
+    el('label', {}, el('input', { className: 't-urg', type: 'checkbox', checked: !!i.urgent }), '긴급'),
+    el('button', { type: 'button', className: 'icon', textContent: '✕', title: '이 줄 삭제', onclick: () => row.remove() }));
+  return row;
+}
+
+function openTplEditor(t) {
+  tplEditing = t || null;
+  $('#tpl-form').reset();
+  $('#tpl-dlg-title').textContent = t ? '템플릿 수정' : '새 템플릿';
+  $('#tpl-error').textContent = '';
+  $('#tpl-form').elements.name.value = t?.name || '';
+  $('#tpl-rows').replaceChildren(...(t?.items?.length ? t.items : [undefined]).map((i) => tplRow(i)));
+  $('#tpl-dialog').showModal();
+}
+$('#tpl-add').onclick = () => openTplEditor(null);
+$('#tpl-row-add').onclick = () => $('#tpl-rows').append(tplRow());
+$('#tpl-cancel').onclick = () => $('#tpl-dialog').close();
+$('#tpl-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const items = [...$('#tpl-rows').children]
+    .map((r) => ({ title: r.querySelector('.t-title').value.trim(), offset: Number(r.querySelector('.t-off').value) || 0, urgent: r.querySelector('.t-urg').checked }))
+    .filter((i) => i.title);
+  try {
+    await api(tplEditing ? `/api/templates/${tplEditing.id}` : '/api/templates', { method: tplEditing ? 'PUT' : 'POST', body: { name: e.target.elements.name.value, items } });
+    $('#tpl-dialog').close();
+    loadTpl();
+  } catch (err) {
+    $('#tpl-error').textContent = err.message;
+  }
+};
+
+function paintTplApply() {
+  const base = $('#tplapply-form').elements.base.value;
+  const ul = $('#tplapply-list');
+  ul.replaceChildren();
+  if (!base || !tplApplying) return;
+  for (const i of tplApplying.items) ul.append(el('li', {}, el('b', { textContent: mdw(addDays(toDate(base), i.offset)) }), ` ${i.urgent ? '🔥 ' : ''}${i.title}`));
+}
+function openTplApply(t) {
+  tplApplying = t;
+  const f = $('#tplapply-form');
+  f.reset();
+  f.elements.base.value = dateStr(new Date());
+  $('#tplapply-title').textContent = `"${t.name}" 적용`;
+  $('#tplapply-error').textContent = '';
+  paintTplApply();
+  $('#tplapply-dialog').showModal();
+}
+$('#tplapply-form').onchange = paintTplApply;
+$('#tplapply-cancel').onclick = () => $('#tplapply-dialog').close();
+$('#tplapply-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const f = e.target.elements;
+  const kind = f.mode.value === 'team' ? 'team' : 'personal';
+  const visibility = f.mode.value === 'personal-me' ? 'me' : 'team';
+  const go = $('#tplapply-go');
+  go.disabled = true;
+  let ok = 0;
+  try {
+    for (const i of tplApplying.items) {
+      const day = dateStr(addDays(toDate(f.base.value), i.offset));
+      await api('/api/events', {
+        method: 'POST',
+        body: {
+          title: `[${tplApplying.name}] ${i.title}`, category: '기타', urgent: !!i.urgent, importance: i.urgent ? 2 : 1,
+          kind, visibility, edit_perm: kind === 'team' ? 'attendees' : 'owner',
+          all_day: true, start: day, end: day, location: '', memo: '', attendees: [], alarms: [], recur: null, assignee_id: null,
+        },
+      });
+      ok++;
+    }
+    $('#tplapply-dialog').close();
+    toast(`일정 ${ok}개가 등록되었습니다. 전체 캘린더와 오늘의 할 일에서 체크할 수 있습니다.`);
+    refresh();
+  } catch (err) {
+    $('#tplapply-error').textContent = `${ok}개 등록 후 오류가 났습니다: ${err.message}`;
+  } finally {
+    go.disabled = false;
+  }
+};
+
+// ---------- 업무 보드 (진행 중 · 종료 · 취소) ----------
+const BOARD = { month: new Date(new Date().getFullYear(), new Date().getMonth(), 1), scope: 'mine', urgent: false, items: [] };
+const BOARD_COLS = [['active', '🟢 진행 중'], ['done', '✅ 종료'], ['cancelled', '🚫 취소']];
+const cardKey = (e) => `${e.extendedProps.eventId}|${e.extendedProps.occ}`;
+
+async function loadBoard() {
+  const from = BOARD.month;
+  const to = new Date(from.getFullYear(), from.getMonth() + 1, 1);
+  $('#board-title').textContent = `${from.getFullYear()}년 ${from.getMonth() + 1}월`;
+  try {
+    BOARD.items = await loadEvents(localStr(from), localStr(to), true);
+  } catch (e) {
+    return toast(e.message, true);
+  }
+  renderBoard();
+}
+
+async function moveCard(card, status) {
+  const x = card.extendedProps;
+  if (x.status === status) return;
+  if (!x.canEdit) return toast('이 일정을 바꿀 권한이 없습니다.', true);
+  const ok = await changeStatus(x, status);
+  await loadBoard();
+  if (ok) refresh();
+}
+
+function renderBoard() {
+  const body = $('#board-body');
+  body.replaceChildren();
+  const list = BOARD.items
+    .filter((e) => (BOARD.scope === 'all' || isMineEv(e.extendedProps)) && (!BOARD.urgent || e.extendedProps.urgent))
+    .sort((a, b) => toDate(a.start) - toDate(b.start));
+  for (const [key, label] of BOARD_COLS) {
+    const rows = list.filter((e) => e.extendedProps.status === key);
+    const box = el('div', { className: 'kb-list' });
+    if (!rows.length) box.append(el('div', { className: 'kb-empty', textContent: '해당하는 일정이 없습니다' }));
+    for (const e of rows) {
+      const x = e.extendedProps;
+      const card = el('div', { className: 'kb-card', draggable: !!x.canEdit },
+        el('b', { textContent: `${x.urgent ? '🔥 ' : ''}${x.importance === 2 ? '⭐ ' : ''}${x.rawTitle || e.title}` }),
+        el('span', { className: 'm' }, `${mdw(toDate(e.start))} ${timeText(e)}`, el('span', { className: `cat cat-${x.category} pill`, textContent: x.category })),
+        '');
+      card.style.borderLeftColor = e.color;
+      if (x.canEdit) {
+        // 끌어다 놓기가 안 되는 화면(휴대폰 등)을 위한 버튼
+        const [to, text] = key === 'active' ? ['done', '종료로 ▶'] : ['active', '◀ 진행 중으로'];
+        card.append(el('button', { type: 'button', className: 'go', textContent: text, onclick: (ev) => { ev.stopPropagation(); moveCard(e, to); } }));
+      }
+      card.ondragstart = (ev) => {
+        ev.dataTransfer.setData('text/plain', cardKey(e));
+        ev.dataTransfer.effectAllowed = 'move';
+        card.classList.add('dragging');
+      };
+      card.ondragend = () => card.classList.remove('dragging');
+      card.onclick = () => openEvent(x, e.allDay);
+      box.append(card);
+    }
+    const col = el('section', { className: 'kb-col' }, el('h3', {}, label, el('span', { className: 'cnt', textContent: rows.length })), box);
+    col.ondragover = (ev) => { ev.preventDefault(); col.classList.add('over'); };
+    col.ondragleave = (ev) => { if (!col.contains(ev.relatedTarget)) col.classList.remove('over'); };
+    col.ondrop = (ev) => {
+      ev.preventDefault();
+      col.classList.remove('over');
+      const k = ev.dataTransfer.getData('text/plain');
+      const card = BOARD.items.find((i) => cardKey(i) === k);
+      if (card) moveCard(card, key);
+    };
+    body.append(col);
+  }
+}
+$('#board-prev').onclick = () => { BOARD.month = new Date(BOARD.month.getFullYear(), BOARD.month.getMonth() - 1, 1); loadBoard(); };
+$('#board-next').onclick = () => { BOARD.month = new Date(BOARD.month.getFullYear(), BOARD.month.getMonth() + 1, 1); loadBoard(); };
+$('#board-now').onclick = () => { BOARD.month = new Date(new Date().getFullYear(), new Date().getMonth(), 1); loadBoard(); };
+$('#board-urgent').onchange = (e) => { BOARD.urgent = e.target.checked; renderBoard(); };
+// ---------- 일정 복제 · 직접 링크 ----------
+$('#btn-copy').onclick = () => {
+  const d = current;
+  dlg.close();
+  openDialog({
+    title: `${d.title} (복사)`, category: d.category, kind: d.kind, visibility: d.visibility, edit_perm: d.edit_perm,
+    all_day: d.all_day, start: d.start, end: d.end, location: d.location, memo: d.memo, assignee_id: d.assignee_id,
+    urgent: d.urgent, importance: d.importance, attendees: d.attendees, alarms: d.alarms, recur: d.recur,
+  });
+  toast('일정을 복제했습니다. 날짜와 제목을 확인하고 저장하세요.');
+};
+$('#btn-link').onclick = async () => {
+  const d = current;
+  const day = (d.occ || d.start || '').slice(0, 10);
+  const url = `${location.origin}${location.pathname}#event=${d.id}${day ? `&d=${day}` : ''}`;
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('일정 링크를 복사했습니다. 로그인한 팀원에게 전달하면 바로 열립니다.');
+  } catch {
+    prompt('아래 링크를 복사(Ctrl+C)하세요.', url);
+  }
+};
+// 주소에 #event=번호&d=날짜 가 있으면 그 일정을 바로 연다
+function openFromHash() {
+  const m = location.hash.match(/^#event=(\d+)(?:&d=(\d{4}-\d\d-\d\d))?/);
+  if (!m || !me || !cal) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  openNotification({ event_id: +m[1], ref_start: m[2] || dateStr(new Date()), read_at: 'x' });
+}
+window.addEventListener('hashchange', openFromHash);
+
+
+
+// 교육·참석요청 메일 현황 (메일 정보는 관리자에게만 보인다)
+let eduSeq = 0;
+async function renderDashEdu() {
+  const seq = ++eduSeq;
+  const box = $('#dash-edu-body');
+  const today = midnight(new Date());
+  const ts = dateStr(today);
+  const ws = dateStr(addDays(today, -today.getDay()));
+  const we = dateStr(addDays(today, 7 - today.getDay()));
+  let rows;
+  try {
+    rows = await api('/api/trainings');
+  } catch {
+    return;
+  }
+  let preview = null;
+  let log = [];
+  if (me.role === 'admin') {
+    try {
+      [preview, log] = await Promise.all([api('/api/training-mail/preview'), api('/api/training-mail/log')]);
+    } catch {
+      preview = null;
+    }
+  }
+  if (seq !== eduSeq) return;
+  const people = (list) => new Set(list.map((r) => `${r.company}|${r.name}`)).size;
+  const todayRows = rows.filter((r) => r.start_date && r.start_date <= ts && (r.end_date || r.start_date) >= ts);
+  const weekRows = rows.filter((r) => r.start_date && r.start_date >= ws && r.start_date < we);
+  const monthRows = rows.filter((r) => r.start_date && r.start_date.slice(0, 7) === ts.slice(0, 7));
+  const stat = (label, n, unit, warn) => el('div', { className: `es${warn ? ' warn' : ''}` }, el('b', { textContent: `${n}${unit}` }), label);
+  const out = [stat('오늘 교육 대상', people(todayRows), '명'), stat('이번 주 시작 교육', weekRows.length, '건'), stat('이번 달 교육', monthRows.length, '건')];
+  if (!rows.length) {
+    box.replaceChildren(el('p', { className: 'note', textContent: '아직 교육계획이 없습니다. 📚 교육 현황에서 엑셀을 올려 주세요.' }));
+    return;
+  }
+  if (preview) {
+    const failed = log.filter((l) => !l.ok && l.sent_at >= dateStr(addDays(today, -7))).length;
+    const noEmail = preview.due.filter((p) => !p.email).length;
+    out.push(stat('오늘 보낼 메일', preview.due.length, '명'));
+    out.push(stat('메일 주소 없는 대상', noEmail, '명', noEmail > 0));
+    out.push(stat('최근 7일 발송 실패', failed, '건', failed > 0));
+    if (!preview.smtp) out.push(el('p', { className: 'note', textContent: '⚠️ 메일(SMTP)이 설정되지 않아 발송되지 않습니다.' }));
+    else if (!preview.enabled) out.push(el('p', { className: 'note', textContent: '자동 발송이 꺼져 있습니다.' }));
+  } else {
+    out.push(el('p', { className: 'note', textContent: '메일 발송 현황은 관리자에게만 표시됩니다.' }));
+  }
+  box.replaceChildren(...out);
+}
+
+// 바로가기: 이미 있는 화면·버튼으로 이동한다
+function paintQuick() {
+  const goEdu = (then) => () => {
+    setView('edu');
+    if (then) setTimeout(then, 300);
+  };
+  // 서버 없는 버전(STATIC_MODE)에는 교육 현황·엑셀 업로드가 없다
+  const items = window.STATIC_MODE
+    ? [
+        ['➕ 새 일정', () => $('#todo-add').click()],
+        ['📋 업무 템플릿', () => setView('tpl')],
+        ['⏰ 만료일 관리', () => setView('exp')],
+        ['🔍 일정 검색', () => $('#btn-search').click()],
+      ]
+    : [
+        ['➕ 새 일정', () => $('#todo-add').click()],
+        ['📚 교육 현황', goEdu()],
+        ...(me.role === 'admin' ? [['✉️ 참석요청 메일', goEdu(() => $('#edu-mail').click())]] : []),
+        ['📤 엑셀 업로드', () => $('#btn-import').click()],
+        ['🔍 일정 검색', () => $('#btn-search').click()],
+      ];
+  const box = $('#quick-body');
+  box.replaceChildren(...items.map(([label, fn]) => el('button', { type: 'button', textContent: label, onclick: fn })));
 }
 
 function paintDash() {
@@ -748,12 +1172,10 @@ function paintDash() {
   const mineToday = items.filter((e) => occursOn(e, today) && isMineEv(e.extendedProps));
   const activeToday = mineToday.filter((e) => e.extendedProps.status === 'active');
   const horizon = addDays(today, 15);
-  const waiting = items.filter((e) => isMineEv(e.extendedProps) && e.extendedProps.myResponse === 'pending' && e.extendedProps.status === 'active' && toDate(e.start) >= today && toDate(e.start) < horizon);
   const kpi = (cls, label, n, unit = '건') => el('span', { className: `kpi ${cls}` }, label, el('b', { textContent: n }), unit);
   $('#dash-kpi').replaceChildren(
     kpi('k-today', '오늘 일정 ', activeToday.length),
     kpi('k-urgent', '🔥 긴급 ', activeToday.filter((e) => e.extendedProps.urgent).length),
-    kpi('k-wait', '응답 대기 ', waiting.length),
     kpi('k-note', '🔔 새 알림 ', lastUnread || 0),
   );
 
@@ -771,7 +1193,7 @@ function paintDash() {
       await changeStatus(x, cb.checked ? 'done' : 'active');
       refresh();
     };
-    const t = el('span', { className: 't' }, el('b', { textContent: e.title }), el('small', { textContent: `${timeText(e)}${x.location ? ' · 📍 ' + x.location : ''}${dashScope === 'all' ? ' · ' + x.ownerName : ''}` }));
+    const t = el('span', { className: 't' }, el('b', { textContent: e.title }), el('small', { textContent: `${timeText(e)}${x.location ? ' · 📍 ' + x.location : ''}` }));
     t.onclick = () => openEvent(x, e.allDay);
     ul.append(el('li', { className: [x.status !== 'active' && x.status, x.urgent && x.status === 'active' && 'urgent'].filter(Boolean).join(' ') }, cb, t));
   }
@@ -804,30 +1226,6 @@ function paintDash() {
   }
   if (dayEvs.length > 6) wl.append(el('li', { className: 'muted small', textContent: `외 ${dayEvs.length - 6}건 (전체 캘린더에서 확인)` }));
 
-  // --- 목표 진행률 (내 일정 중 종료 처리한 비율) ---
-  const cWs = addDays(today, -today.getDay());
-  const mStart = new Date(today.getFullYear(), today.getMonth(), 1);
-  const mEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-  const rate = (a, b, pred = () => true) => {
-    const list = items.filter((e) => isMineEv(e.extendedProps) && e.extendedProps.status !== 'cancelled' && toDate(e.start) >= a && toDate(e.start) < b && pred(e.extendedProps));
-    const done = list.filter((e) => e.extendedProps.status === 'done').length;
-    return { done, total: list.length, pct: list.length ? Math.round((done / list.length) * 100) : 0 };
-  };
-  const goals = [
-    ['오늘', 'g1', rate(today, addDays(today, 1))],
-    ['이번 주', 'g2', rate(cWs, addDays(cWs, 7))],
-    ['이번 달', 'g3', rate(mStart, mEnd)],
-    ['🔥 긴급 일정 (이번 달)', 'g4', rate(mStart, mEnd, (x) => x.urgent)],
-  ];
-  $('#goal-body').replaceChildren(
-    ...goals.map(([name, cls, r]) =>
-      el('div', { className: 'goal' },
-        el('div', { className: 'gh' }, el('b', { textContent: name }), el('span', {}, r.total ? `${r.done}/${r.total} 완료 · ` : '일정 없음 · ', el('span', { className: 'pct', textContent: `${r.pct}%` }))),
-        el('div', { className: `bar ${cls}` }, Object.assign(el('i'), { style: `width:${r.pct}%` })),
-      ),
-    ),
-  );
-
   // --- 긴급·중요 일정 현황 ---
   const hot = items
     .filter((e) => (e.extendedProps.urgent || e.extendedProps.importance === 2) && (e.end ? toDate(e.end) : toDate(e.start)) >= today && toDate(e.start) < horizon)
@@ -842,45 +1240,13 @@ function paintDash() {
     if (x.urgent) chips.append(el('span', { className: 'chip urgent', textContent: '🔥 긴급' }));
     const [cls, label] = x.status === 'cancelled' ? ['cancel', '취소'] : x.status === 'done' ? ['done', '종료'] : x.myResponse === 'pending' ? ['wait', '응답 대기'] : ['run', '진행 중'];
     chips.append(el('span', { className: `chip ${cls}`, textContent: label }));
-    const li = el('li', {}, el('span', { className: 'nm' }, `${x.importance === 2 ? '⭐ ' : ''}${x.rawTitle}`, el('small', { textContent: `${mdw(toDate(e.start))} ${timeText(e)} · 등록 ${x.ownerName}${x.assigneeName ? ' · 담당 ' + x.assigneeName : ''}` })), chips);
+    const li = el('li', {}, el('span', { className: 'nm' }, `${x.importance === 2 ? '⭐ ' : ''}${x.rawTitle}`, el('small', { textContent: `${mdw(toDate(e.start))} ${timeText(e)}` })), chips);
     li.onclick = () => openEvent(x, e.allDay);
     sl.append(li);
   }
 }
 
-// 최근 활동 기록: 누가 · 언제 · 무엇을 바꿨는지 (등록/변경/취소/댓글/첨부파일/참석 응답)
-const ACTIVITY_ICON = { created: '🆕', updated: '✏️', cancelled: '🚫', done: '✅', restored: '♻️', response: '🙋', comment: '💬' };
-const ACTIVITY_LABEL = { created: '등록', updated: '변경', cancelled: '취소', done: '종료', restored: '복원', response: '응답', comment: '댓글' };
-async function renderActivity() {
-  let data;
-  try {
-    data = await api('/api/activity');
-  } catch {
-    return;
-  }
-  const ul = $('#activity-list');
-  ul.replaceChildren();
-  if (!data.items.length) ul.append(el('li', { className: 'empty-msg', textContent: '아직 활동 기록이 없습니다.' }));
-  for (const a of data.items) {
-    const detail = a.detail.length > 140 ? a.detail.slice(0, 140) + '…' : a.detail;
-    const li = el('li', {},
-      el('span', { className: 'ai', textContent: ACTIVITY_ICON[a.action] || '•' }),
-      el('span', { className: 'at' },
-        el('b', { textContent: `${a.who || '시스템'} · ${ACTIVITY_LABEL[a.action] || a.action}` }), ` ${a.title}`,
-        el('span', { className: 'd', textContent: detail }),
-        el('time', { textContent: ago(sqlTime(a.at)) })));
-    li.onclick = () => openNotification({ event_id: a.event_id, ref_start: a.ref_start, read_at: 'x' });
-    ul.append(li);
-  }
-}
-
-$('#todo-scope').onclick = (e) => {
-  const b = e.target.closest('button');
-  if (!b) return;
-  dashScope = b.dataset.s;
-  document.querySelectorAll('#todo-scope button').forEach((x) => x.classList.toggle('on', x === b));
-  paintDash();
-};
+$('#edu-open').onclick = () => setView('edu');
 $('#week-prev').onclick = () => {
   dashWeek--;
   dashDay = addDays(dashDay, -7);
@@ -911,40 +1277,6 @@ function quickFrom(btn, day) {
 $('#todo-add').onclick = (e) => quickFrom(e.currentTarget, midnight(new Date()));
 $('#week-add').onclick = (e) => quickFrom(e.currentTarget, dashDay);
 
-// 빠른 메모
-async function renderNotes() {
-  let list;
-  try {
-    list = await api('/api/notes');
-  } catch {
-    return;
-  }
-  const ul = $('#note-list');
-  ul.replaceChildren();
-  if (!list.length) ul.append(el('li', { className: 'empty-msg', textContent: '아이디어나 할 일을 메모해 보세요.' }));
-  for (const n of list) {
-    const del = el('button', { type: 'button', className: 'x', textContent: '✕', title: '삭제' });
-    del.onclick = async () => {
-      await api(`/api/notes/${n.id}`, { method: 'DELETE' }).catch((e) => toast(e.message, true));
-      renderNotes();
-    };
-    ul.append(el('li', {}, '💡', el('span', { className: 'b', textContent: n.body }), del));
-  }
-}
-$('#note-form').onsubmit = async (e) => {
-  e.preventDefault();
-  const input = e.target.elements.body;
-  const body = input.value.trim();
-  if (!body) return;
-  try {
-    await api('/api/notes', { method: 'POST', body: { body } });
-    input.value = '';
-    renderNotes();
-  } catch (err) {
-    toast(err.message, true);
-  }
-};
-
 // ---------- 교육 현황 (교육계획을 월별·인원별로 정리) ----------
 const EDU = { rows: [], view: 'month', co: '', dept: '', kind: '', res: '', q: '', open: new Set(), loaded: false };
 const resKind = (r) => (r === '이수' ? 'done' : !r ? 'pending' : 'other');
@@ -955,6 +1287,7 @@ const RES_LABEL = { done: '이수', pending: '실적 미입력' };
 async function loadTrainings() {
   $('#edu-import').classList.toggle('hidden', me.role !== 'admin');
   $('#edu-mail').classList.toggle('hidden', me.role !== 'admin');
+  $('#edu-remind').classList.toggle('hidden', me.role !== 'admin');
   try {
     EDU.rows = await api('/api/trainings');
     EDU.loaded = true;
@@ -1021,6 +1354,76 @@ const resChip = (r) => {
   return el('span', { className: `rchip ${k}`, textContent: r.result || '미입력' });
 };
 
+// 이수 결과 입력 (관리자): 표에서 바로 고른다
+const RES_CHOICES = ['', '이수', '취소', '퇴사', '휴직', '대체'];
+function resSelect(r) {
+  const opts = RES_CHOICES.includes(r.result) ? RES_CHOICES : [...RES_CHOICES, r.result];
+  const s = el('select', { className: 'res-sel', title: '이수 결과 변경' }, ...opts.map((v) => el('option', { value: v, textContent: v || '미입력', selected: v === r.result })));
+  s.onchange = async () => {
+    try {
+      await api(`/api/trainings/${r.id}/result`, { method: 'POST', body: { result: s.value } });
+      r.result = s.value;
+      renderEdu();
+    } catch (err) {
+      s.value = r.result;
+      toast(err.message, true);
+    }
+  };
+  return s;
+}
+
+// 수료증 첨부 (관리자)
+function certCell(r) {
+  const td = el('td', { className: 'nw' });
+  if (r.has_cert) {
+    td.append(
+      el('a', { className: 'certbtn', href: `/api/trainings/${r.id}/cert`, title: r.cert_name, textContent: '📎 받기' }), ' ',
+      el('button', {
+        type: 'button', className: 'certbtn', textContent: '✕', title: '수료증 삭제',
+        onclick: async () => {
+          if (!confirm('수료증 파일을 삭제할까요?')) return;
+          try {
+            await api(`/api/trainings/${r.id}/cert`, { method: 'DELETE' });
+            await loadTrainings();
+          } catch (err) {
+            toast(err.message, true);
+          }
+        },
+      }));
+  } else {
+    const inp = el('input', { type: 'file' });
+    inp.onchange = async () => {
+      if (!inp.files[0]) return;
+      const fd = new FormData();
+      fd.append('file', inp.files[0]);
+      try {
+        await api(`/api/trainings/${r.id}/cert`, { method: 'POST', body: fd });
+        toast('수료증을 첨부했습니다.');
+        await loadTrainings();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    };
+    td.append(el('button', { type: 'button', className: 'certbtn', textContent: '＋ 첨부', onclick: () => inp.click() }));
+  }
+  return td;
+}
+
+$('#edu-remind').onclick = async () => {
+  try {
+    const pv = await api('/api/training-mail/remind-preview');
+    if (!pv.people.length) return toast('안내할 미이수자가 없습니다. (교육이 끝났는데 실적이 비어 있는 사람)');
+    if (!pv.smtp) return toast('메일(SMTP)이 설정되어 있지 않아 발송할 수 없습니다.', true);
+    const withMail = pv.people.filter((p) => p.email).length;
+    const names = pv.people.slice(0, 8).map((p) => `${p.name}(${p.items.length}건)`).join(', ');
+    if (!confirm(`교육이 끝났는데 이수 결과가 없는 ${pv.people.length}명 중 메일 주소가 있는 ${withMail}명에게 확인 요청 메일을 보냅니다.\n\n${names}${pv.people.length > 8 ? ' 외' : ''}\n\n보낼까요?`)) return;
+    const r = await api('/api/training-mail/remind', { method: 'POST' });
+    toast(`발송 ${r.sent}명(${r.items}건)${r.failed ? `, 실패 ${r.failed}명` : ''}${r.noEmail.length ? `, 메일 주소 없음 ${r.noEmail.length}명` : ''}`);
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
 function renderEdu() {
   const body = $('#edu-body');
   if (!EDU.rows.length) {
@@ -1045,6 +1448,7 @@ function renderEdu() {
     kpi('k-wait', '교육 인원 ', peopleOf(rows), '명'),
     kpi('k-note', '교육비 ', won(sumBy(rows, (r) => r.cost)), '원'),
     kpi('k-ok', '이수 ', done, '건'),
+    kpi('k-ok', '이수율 ', rows.length - other > 0 ? Math.round((done / (rows.length - other)) * 100) : 0, '%'),
     kpi('k-urgent', '실적 미입력 ', pending, '건'),
     kpi('k-mute', '취소·퇴사·휴직·대체 ', other, '건'),
   );
@@ -1082,6 +1486,7 @@ function renderEduChart(rows) {
 function eduTable(list, { showMonth = false } = {}) {
   const head = ['일정', '소속 · 부서', '성명(직급)', '구분', '교육과목', '교육기관', '시간', '교육비', '실적'];
   if (showMonth) head.unshift('월');
+  if (me.role === 'admin') head.push('수료증');
   const tbl = el('table', { className: 'edu-table' }, el('thead', {}, el('tr', {}, ...head.map((h) => el('th', { textContent: h })))));
   const tb = el('tbody');
   for (const r of list) {
@@ -1096,8 +1501,9 @@ function eduTable(list, { showMonth = false } = {}) {
       el('td', { textContent: r.org }),
       el('td', { className: 'num', textContent: r.hours ? `${r.hours}h` : '' }),
       el('td', { className: 'num', textContent: r.cost ? won(r.cost) : '-' }),
-      el('td', {}, resChip(r)),
+      el('td', {}, me.role === 'admin' ? resSelect(r) : resChip(r)),
     );
+    if (me.role === 'admin') tr.append(certCell(r));
     if (r.note) tr.firstElementChild.append(el('small', { className: 'warnline', textContent: ` ⚠ ${r.note}` }));
     tb.append(tr);
   }
@@ -1421,20 +1827,16 @@ function initCalendar() {
       const x = event.extendedProps;
       return [x.status === 'cancelled' && 'ev-cancelled', x.status === 'done' && 'ev-done', x.urgent && x.status === 'active' && 'ev-urgent'].filter(Boolean);
     },
-    // 일정 칸: [시간] 제목 + 등록자의 (팀 직책)
+    // 일정 칸: [시간] 제목
     eventContent: (arg) => {
       if (arg.view.type.startsWith('list')) return undefined;
-      const x = arg.event.extendedProps;
-      const ou = users.find((u) => u.id === x.ownerId);
       const wrap = el('div', { className: 'evc' }, el('b', { textContent: `${arg.timeText ? arg.timeText + ' ' : ''}${arg.event.title}` }));
-      const sub = ou && orgText(ou);
-      if (sub) wrap.append(el('small', { textContent: `(${sub})` }));
       return { domNodes: [wrap] };
     },
     eventDidMount: ({ el: node, event }) => {
       node.style.borderLeft = `3px solid ${event.extendedProps.status === 'cancelled' ? '#9ca3af' : event.color || '#64748b'}`;
       const x = event.extendedProps;
-      node.title = [event.title, `등록 ${x.ownerName}`, x.assigneeName && `담당 ${x.assigneeName}`, x.location && `장소 ${x.location}`].filter(Boolean).join('\n');
+      node.title = [event.title, x.location && `장소 ${x.location}`].filter(Boolean).join('\n');
     },
     // 날짜를 클릭하거나 여러 날/시간대를 드래그하면 그 자리에서 바로 일정을 등록할 수 있다
     select: (info) => {
@@ -2022,6 +2424,8 @@ function openDialog(d) {
 
   // 버튼 / 입력 잠금
   $('#btn-delete').classList.toggle('hidden', !editing || !canManage);
+  $('#btn-copy').classList.toggle('hidden', !editing);
+  $('#btn-link').classList.toggle('hidden', !editing);
   $('#btn-save').classList.toggle('hidden', !canEdit);
   form.querySelectorAll('input, select, textarea').forEach((x) => {
     if (!x.closest('#collab') && !x.closest('#status-row')) x.disabled = !canEdit;

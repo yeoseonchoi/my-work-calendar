@@ -11,7 +11,9 @@ import { startScheduler, runScheduledJobs } from './scheduler.js';
 import { mailConfigured } from './mailer.js';
 import { pushNote, addHistory } from './notify.js';
 import { parseTrainingWorkbook, buildTrainingReport } from './training.js';
+import { parseAlertDays, DEFAULT_ALERT_DAYS } from './expirations.js';
 import {
+  incompleteToday, remindIncomplete,
   getSettings as getTrainingMailSettings, saveSettings as saveTrainingMailSettings, LEAD_CHOICES, isEmail, MAIL_SUBJECT, DEFAULT_INTRO, DEFAULT_OUTRO,
   dueToday, upcomingSends, runDue as runTrainingMailDue, sendTestMail as sendTrainingTestMail,
 } from './training-mail.js';
@@ -1059,6 +1061,13 @@ app.get('/api/activity', auth, async (req, res) => {
     .map((h) => ({ id: h.id, action: h.action, detail: h.detail, who: h.name || '', at: h.created_at, event_id: h.event_id, title: visible.get(h.event_id).title, ref_start: visible.get(h.event_id).start }));
   res.json({ items: rows });
 });
+// 활동 기록 삭제 (관리자): 선택한 기록만 지운다. 일정의 변경 이력에서도 함께 사라진다.
+app.post('/api/activity/delete', auth, adminOnly, async (req, res) => {
+  const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter(Number.isInteger).slice(0, 400);
+  if (!ids.length) throw httpError(400, '삭제할 기록이 없습니다.');
+  await batch(ids.map((id) => ({ sql: 'DELETE FROM history WHERE id = ?', args: [id] })));
+  res.json({ ok: true, deleted: ids.length });
+});
 app.get('/api/events/:id/history', auth, async (req, res) => {
   const ev = await visibleEvent(req);
   res.json(
@@ -1198,8 +1207,13 @@ app.get('/api/export', auth, async (req, res) => {
 
 // ---------- 교육 현황 (교육계획 엑셀 -> 월별·인원별 정리) ----------
 app.get('/api/trainings', auth, async (_req, res) => {
-  res.json(await db.prepare('SELECT * FROM trainings ORDER BY month = 0, month, COALESCE(start_date, \'9999\'), dept, name').all());
+  const rows = await db.prepare('SELECT * FROM trainings ORDER BY month = 0, month, COALESCE(start_date, \'9999\'), dept, name').all();
+  // 저장 위치(cert_stored)는 화면에 내보내지 않고, 수료증이 있는지만 알려 준다
+  res.json(rows.map(({ cert_stored, ...r }) => ({ ...r, has_cert: !!cert_stored })));
 });
+
+// 같은 교육(소속·성명·과목·시작일)을 다시 찾기 위한 열쇠. 엑셀을 다시 올려도 직접 입력한 이수 결과·수료증을 이어 붙인다.
+const trainingKey = (r) => `${r.company}|${r.name}|${r.course}|${r.start_date || ''}`;
 
 // 교육계획 엑셀 업로드: 기존 교육 현황을 업로드한 파일 내용으로 교체한다 (관리자)
 app.post('/api/trainings/import', auth, adminOnly, uploadMem.single('file'), async (req, res) => {
@@ -1215,11 +1229,19 @@ app.post('/api/trainings/import', auth, adminOnly, uploadMem.single('file'), asy
   if (!rows.length) throw httpError(400, '등록할 교육 행이 없습니다.');
   const before = (await db.prepare('SELECT COUNT(*) AS n FROM trainings').get()).n;
   // 삭제와 전체 입력을 한 번의 요청(원자적)으로 보낸다 — 원격 DB 에서 수백 번 왕복하지 않도록
-  const insertSql = 'INSERT INTO trainings (no, company, job, dept, rank, name, kind, org, course, days, hours, schedule_raw, start_date, end_date, month, cost, result, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)';
-  await batch([
-    { sql: 'DELETE FROM trainings' },
-    ...rows.map((r) => ({ sql: insertSql, args: [r.no, r.company, r.job, r.dept, r.rank, r.name, r.kind, r.org, r.course, r.days, r.hours, r.schedule_raw, r.start_date, r.end_date, r.month, r.cost, r.result, r.note] })),
-  ]);
+  const old = new Map((await db.prepare('SELECT * FROM trainings').all()).map((o) => [trainingKey(o), o]));
+  const insertSql = 'INSERT INTO trainings (no, company, job, dept, rank, name, kind, org, course, days, hours, schedule_raw, start_date, end_date, month, cost, result, note, cert_name, cert_stored) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)';
+  const kept = new Set();
+  const args = rows.map((r) => {
+    const o = old.get(trainingKey(r));
+    if (o?.cert_stored) kept.add(o.cert_stored);
+    // 엑셀의 실적 칸이 비어 있으면 화면에서 직접 입력한 이수 결과를 유지한다
+    return [r.no, r.company, r.job, r.dept, r.rank, r.name, r.kind, r.org, r.course, r.days, r.hours, r.schedule_raw, r.start_date, r.end_date, r.month, r.cost, r.result || o?.result || '', r.note, o?.cert_name || '', o?.cert_stored || ''];
+  });
+  // 삭제와 전체 입력을 한 번의 요청(원자적)으로 보낸다 — 원격 DB 에서 수백 번 왕복하지 않도록
+  await batch([{ sql: 'DELETE FROM trainings' }, ...args.map((a) => ({ sql: insertSql, args: a }))]);
+  // 더 이상 연결되지 않은 수료증 파일 정리
+  for (const o of old.values()) if (o.cert_stored && !kept.has(o.cert_stored)) await removeFile(o.cert_stored);
   res.json({ imported: rows.length, replaced: before, warnings });
 });
 
@@ -1358,6 +1380,115 @@ app.get('/api/training-mail/log', auth, adminOnly, async (_req, res) => {
   );
 });
 
+// ---------- 교육 이수 관리 (관리자): 이수 결과 입력 · 수료증 첨부 · 미이수자 안내 메일 ----------
+const RESULT_CHOICES = ['', '이수', '취소', '퇴사', '휴직', '대체'];
+app.post('/api/trainings/:id/result', auth, adminOnly, async (req, res) => {
+  const result = String(req.body?.result ?? '');
+  if (!RESULT_CHOICES.includes(result)) throw httpError(400, '실적 값이 올바르지 않습니다.');
+  const r = await db.prepare('UPDATE trainings SET result = ? WHERE id = ?').run(result, req.params.id);
+  if (!r.changes) throw httpError(404, '교육을 찾을 수 없습니다.');
+  res.json({ ok: true });
+});
+
+app.post('/api/trainings/:id/cert', auth, adminOnly, upload.single('file'), async (req, res) => {
+  if (!req.file) throw httpError(400, '수료증 파일을 선택하세요.');
+  const t = await db.prepare('SELECT id, cert_stored FROM trainings WHERE id = ?').get(req.params.id);
+  if (!t) throw httpError(404, '교육을 찾을 수 없습니다.');
+  const name = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+  const stored = await saveFile(req.file.buffer, name, req.file.mimetype);
+  await db.prepare('UPDATE trainings SET cert_name = ?, cert_stored = ? WHERE id = ?').run(name, stored, t.id);
+  if (t.cert_stored) await removeFile(t.cert_stored);
+  res.json({ ok: true, name });
+});
+app.get('/api/trainings/:id/cert', auth, adminOnly, async (req, res) => {
+  const t = await db.prepare('SELECT cert_name, cert_stored FROM trainings WHERE id = ?').get(req.params.id);
+  if (!t?.cert_stored) throw httpError(404, '첨부된 수료증이 없습니다.');
+  const file = await openFile(t.cert_stored);
+  if (!file) throw httpError(404, '저장된 파일을 찾을 수 없습니다.');
+  res.setHeader('Content-Type', file.contentType || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(t.cert_name || '수료증')}`);
+  if (file.size) res.setHeader('Content-Length', file.size);
+  file.stream.on('error', () => res.destroy());
+  file.stream.pipe(res);
+});
+app.delete('/api/trainings/:id/cert', auth, adminOnly, async (req, res) => {
+  const t = await db.prepare('SELECT cert_stored FROM trainings WHERE id = ?').get(req.params.id);
+  if (t?.cert_stored) await removeFile(t.cert_stored);
+  await db.prepare("UPDATE trainings SET cert_name = '', cert_stored = '' WHERE id = ?").run(req.params.id);
+  res.json({ ok: true });
+});
+
+// 교육이 끝났는데 실적(이수 결과)이 비어 있는 사람에게 확인 요청 메일 (하루에 한 번만)
+app.get('/api/training-mail/remind-preview', auth, adminOnly, async (_req, res) => {
+  res.json({ smtp: mailConfigured(), people: await incompleteToday() });
+});
+app.post('/api/training-mail/remind', auth, adminOnly, async (_req, res) => {
+  if (!mailConfigured()) throw httpError(400, '이메일(SMTP) 설정이 없어 발송할 수 없습니다. .env 파일에 SMTP 정보를 입력하고 서버를 다시 시작하세요.');
+  res.json(await remindIncomplete());
+});
+
+// ---------- 만료일 관리 (계약·보험·점검 등): 조회는 모두, 입력·수정·삭제는 관리자 ----------
+function cleanExpiration(b) {
+  const name = String(b.name || '').trim();
+  if (!name) throw httpError(400, '항목 이름을 입력하세요.');
+  if (!/^\d{4}-\d\d-\d\d$/.test(b.expire_date || '')) throw httpError(400, '만료일을 입력하세요.');
+  const alerts = parseAlertDays(b.alert_days);
+  return {
+    category: String(b.category || '').trim().slice(0, 20), name: name.slice(0, 100), expire_date: b.expire_date,
+    owner: String(b.owner || '').trim().slice(0, 40), memo: String(b.memo || '').trim().slice(0, 500),
+    alert_days: (alerts.length ? alerts : DEFAULT_ALERT_DAYS).join(','),
+  };
+}
+app.get('/api/expirations', auth, async (_req, res) => {
+  res.json(await db.prepare('SELECT id, category, name, expire_date, owner, memo, alert_days FROM expirations ORDER BY expire_date, name').all());
+});
+app.post('/api/expirations', auth, adminOnly, async (req, res) => {
+  const f = cleanExpiration(req.body || {});
+  const r = await db.prepare('INSERT INTO expirations (category, name, expire_date, owner, memo, alert_days, created_by) VALUES (?,?,?,?,?,?,?)').run(f.category, f.name, f.expire_date, f.owner, f.memo, f.alert_days, req.user.id);
+  res.json({ id: r.lastInsertRowid });
+});
+app.put('/api/expirations/:id', auth, adminOnly, async (req, res) => {
+  const f = cleanExpiration(req.body || {});
+  const r = await db.prepare('UPDATE expirations SET category = ?, name = ?, expire_date = ?, owner = ?, memo = ?, alert_days = ? WHERE id = ?').run(f.category, f.name, f.expire_date, f.owner, f.memo, f.alert_days, req.params.id);
+  if (!r.changes) throw httpError(404, '항목을 찾을 수 없습니다.');
+  res.json({ ok: true });
+});
+app.delete('/api/expirations/:id', auth, adminOnly, async (req, res) => {
+  await db.prepare('DELETE FROM expirations WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- 업무 템플릿: 정해진 절차를 한 번에 일정(체크리스트)으로 만든다 ----------
+function cleanTemplate(b) {
+  const name = String(b.name || '').trim().slice(0, 40);
+  if (!name) throw httpError(400, '템플릿 이름을 입력하세요.');
+  const items = (Array.isArray(b.items) ? b.items : [])
+    .map((i) => ({ title: String(i.title || '').trim().slice(0, 100), offset: Math.max(-365, Math.min(365, Math.round(+i.offset || 0))), urgent: !!i.urgent }))
+    .filter((i) => i.title)
+    .slice(0, 40);
+  if (!items.length) throw httpError(400, '할 일을 한 개 이상 입력하세요.');
+  return { name, items: JSON.stringify(items) };
+}
+const templateOut = (t) => ({ id: t.id, name: t.name, items: JSON.parse(t.items || '[]') });
+app.get('/api/templates', auth, async (_req, res) => {
+  res.json((await db.prepare('SELECT id, name, items FROM templates ORDER BY id').all()).map(templateOut));
+});
+app.post('/api/templates', auth, async (req, res) => {
+  const f = cleanTemplate(req.body || {});
+  const r = await db.prepare('INSERT INTO templates (name, items) VALUES (?, ?)').run(f.name, f.items);
+  res.json({ id: r.lastInsertRowid });
+});
+app.put('/api/templates/:id', auth, async (req, res) => {
+  const f = cleanTemplate(req.body || {});
+  const r = await db.prepare('UPDATE templates SET name = ?, items = ? WHERE id = ?').run(f.name, f.items, req.params.id);
+  if (!r.changes) throw httpError(404, '템플릿을 찾을 수 없습니다.');
+  res.json({ ok: true });
+});
+app.delete('/api/templates/:id', auth, async (req, res) => {
+  await db.prepare('DELETE FROM templates WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 // ---------- 주기 작업 호출 / 상태 확인 ----------
 // 서버가 상시 떠 있지 않은 Vercel 에서는 이 주소를 5분마다 호출해 알람·자동 종료·교육 메일을 실행한다.
 // (Vercel Cron 또는 cron-job.org 같은 외부 서비스가 "Authorization: Bearer <CRON_SECRET>" 헤더와 함께 호출)
@@ -1396,7 +1527,8 @@ app.use((err, _req, res, _next) => {
 
 // Vercel 은 이 앱을 함수로 실행한다(기본 export). 직접 실행(npm start)할 때만 포트를 열고 스케줄러를 켠다.
 if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
+  // 내 컴퓨터에서만 접속되도록 localhost 에만 연다. 사내망의 다른 사람도 쓰게 하려면 HOST=0.0.0.0 을 .env 에 지정한다.
+  app.listen(PORT, process.env.HOST || '127.0.0.1', () => {
     console.log(`업무 캘린더 실행 중: http://localhost:${PORT}`);
     if (!mailConfigured()) console.log('※ SMTP가 설정되지 않아 알람 메일은 발송되지 않습니다. (앱 상단 알림은 정상 동작) .env 파일을 확인하세요.');
     ensureReady().then(startScheduler).catch((e) => console.error('DB 초기화 실패:', e));

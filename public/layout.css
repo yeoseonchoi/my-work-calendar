@@ -14,10 +14,18 @@ body { background: var(--bg); }
 .content { flex: 1; min-width: 0; overflow: auto; }
 
 /* ───────── 왼쪽 메뉴 ───────── */
-.nav { width: 232px; flex: none; display: flex; flex-direction: column; gap: 6px; padding: 18px 12px 12px; overflow-y: auto; color: #cbd5ee; background: linear-gradient(180deg, #14264a 0%, #0b1630 100%); }
+.nav { width: 232px; flex: none; display: flex; flex-direction: column; gap: 6px; padding: 18px 12px 12px; overflow: hidden; color: #cbd5ee; background: linear-gradient(180deg, #14264a 0%, #0b1630 100%); }
 .brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 18px; color: #fff; font-size: 18px; letter-spacing: .3px; }
 .brand-ico { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--primary); box-shadow: 0 6px 14px rgba(37, 99, 235, .45); }
-.menu { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.menu { display: flex; flex-direction: column; gap: 4px; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .28) transparent; }
+.menu::-webkit-scrollbar { width: 6px; }
+.menu::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .28); border-radius: 6px; }
+@media (min-width: 901px) and (max-height: 820px) {
+  .nav { padding-top: 12px; }
+  .mi { padding: 8px 12px; }
+  .menu { gap: 2px; }
+  .menu-sep { margin: 8px 12px 2px; }
+}
 .mi { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; border: 0; border-radius: 10px; background: none; color: #b8c4e0; font-size: 14px; font-weight: 600; text-align: left; cursor: pointer; transition: background .15s; }
 .mi i { width: 22px; font-style: normal; text-align: center; font-size: 17px; }
 .mi:hover { background: rgba(255, 255, 255, .08); color: #fff; }
@@ -182,7 +190,7 @@ body { background: var(--bg); }
   .nav { position: sticky; top: 0; z-index: 30; flex-direction: row; align-items: center; gap: 4px; width: auto; padding: 8px 10px; overflow: auto hidden; }
   .brand { padding: 0 6px 0 2px; }
   .brand b, .menu-sep, .nu-text { display: none; }
-  .menu { flex: none; flex-direction: row; gap: 2px; }
+  .menu { flex: none; flex-direction: row; gap: 2px; overflow: visible; min-height: auto; }
   .mi { flex-direction: column; gap: 2px; width: auto; padding: 6px 10px; font-size: 10.5px; white-space: nowrap; }
   .mi i { font-size: 18px; }
   .mi .badge { position: absolute; top: 0; right: 4px; }

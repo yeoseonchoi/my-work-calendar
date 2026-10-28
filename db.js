@@ -74,7 +74,7 @@ export async function tx(fn) {
 }
 
 // ───────── 스키마 ─────────
-const SCHEMA_VERSION = '4';
+const SCHEMA_VERSION = '5';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -222,6 +222,36 @@ CREATE TABLE IF NOT EXISTS history (
   detail TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS expirations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  expire_date TEXT NOT NULL,
+  owner TEXT NOT NULL DEFAULT '',
+  memo TEXT NOT NULL DEFAULT '',
+  alert_days TEXT NOT NULL DEFAULT '60,30,7',
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS expiration_alerts (
+  exp_id INTEGER NOT NULL REFERENCES expirations(id) ON DELETE CASCADE,
+  lead INTEGER NOT NULL,
+  expire_date TEXT NOT NULL,
+  PRIMARY KEY (exp_id, lead, expire_date)
+);
+CREATE TABLE IF NOT EXISTS templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  items TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS training_remind_log (
+  training_id INTEGER NOT NULL,
+  sent_on TEXT NOT NULL,
+  email TEXT NOT NULL DEFAULT '',
+  ok INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (training_id, sent_on)
+);
 `;
 
 // 이전 버전 DB 에 뒤늦게 추가된 열 (새 DB 에는 ALTER 로 만들어진다)
@@ -238,6 +268,8 @@ const COLUMNS = [
   ['events', 'status', "TEXT NOT NULL DEFAULT 'active'"],
   ['events', 'kind', "TEXT NOT NULL DEFAULT 'personal'"],
   ['events', 'edit_perm', "TEXT NOT NULL DEFAULT 'owner'"],
+  ['trainings', 'cert_name', "TEXT NOT NULL DEFAULT ''"],
+  ['trainings', 'cert_stored', "TEXT NOT NULL DEFAULT ''"],
 ];
 
 async function migrate() {

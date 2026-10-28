@@ -7,6 +7,8 @@
   <title>업무 캘린더</title>
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/layout.css">
+  <link rel="stylesheet" href="/theme.css">
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'lavender'; } catch (e) { document.documentElement.dataset.theme = 'lavender'; }</script>
 </head>
 <body>
 
@@ -17,11 +19,6 @@
     <h1>업무 캘린더</h1>
     <p class="muted" id="auth-sub">로그인하세요</p>
     <label class="reg-only hidden">이름<input name="name" autocomplete="name"></label>
-    <div class="row reg-only hidden">
-      <label>공장 (선택)<input name="site" maxlength="30" placeholder="예) 미산"></label>
-      <label>팀 (선택)<input name="dept" maxlength="30" placeholder="예) 인사총무"></label>
-    </div>
-    <label class="reg-only hidden">직책 (선택)<input name="position" maxlength="30" placeholder="예) 선임, 팀장"></label>
     <label>이메일<input name="email" type="email" required autocomplete="email"></label>
     <label>비밀번호<input name="password" type="password" required minlength="6" autocomplete="current-password"></label>
     <label class="reg-only hidden">가입 코드 (필요한 경우)<input name="joinCode"></label>
@@ -37,15 +34,17 @@
     <div class="brand"><span class="brand-ico">📅</span><b>업무 캘린더</b></div>
     <nav class="menu">
       <button type="button" class="mi on" data-nav="dash"><i>🏠</i><span>홈</span></button>
-      <button type="button" class="mi" data-nav="cal"><i>📅</i><span>통합 일정관리</span></button>
+      <button type="button" class="mi" data-nav="cal"><i>📅</i><span>내 캘린더</span></button>
+      <button type="button" class="mi" data-nav="board"><i>📊</i><span>업무 보드</span></button>
       <button type="button" class="mi" data-nav="edu"><i>📚</i><span>교육 현황</span></button>
+      <button type="button" class="mi" data-nav="exp"><i>⏰</i><span>만료일 관리</span></button>
+      <button type="button" class="mi" data-nav="tpl"><i>📋</i><span>업무 템플릿</span></button>
       <button type="button" class="mi" id="btn-search"><i>🔍</i><span>일정 검색</span></button>
       <button type="button" class="mi" id="btn-bell"><i>🔔</i><span>알림</span><span id="bell-badge" class="badge hidden">0</span></button>
       <div class="menu-sep">데이터</div>
       <button type="button" class="mi" id="btn-export"><i>📥</i><span>엑셀 내보내기</span></button>
       <button type="button" class="mi" id="btn-import"><i>📤</i><span>엑셀 업로드</span></button>
-      <div class="menu-sep">관리</div>
-      <button type="button" class="mi hidden" id="btn-admin"><i>👥</i><span>팀원 관리</span></button>
+      <div class="menu-sep">설정</div>
       <button type="button" class="mi" id="btn-settings"><i>⚙️</i><span>설정</span></button>
     </nav>
     <div class="nav-user">
@@ -72,6 +71,7 @@
         <div>
           <h2 id="dash-hello">대시보드</h2>
           <p id="dash-date" class="muted"></p>
+          <button type="button" class="mood-chip" id="mood-chip" title="오늘의 기분 바꾸기">🎭 오늘의 기분 고르기</button>
         </div>
       </div>
       <div id="dash-kpi" class="kpis"></div>
@@ -81,8 +81,6 @@
         <header class="card-head">
           <span class="ico">✅</span><h3>오늘의 할 일</h3>
           <span id="todo-count" class="count"></span>
-          <div class="spacer"></div>
-          <div class="seg" id="todo-scope"><button type="button" data-s="mine" class="on">내 일정</button><button type="button" data-s="all">팀 전체</button></div>
         </header>
         <ul id="todo-list" class="todo"></ul>
         <button type="button" class="add-row" id="todo-add">+ 새로 만들기</button>
@@ -102,10 +100,27 @@
         <button type="button" class="add-row" id="week-add">+ 새로 만들기</button>
       </article>
 
-      <article class="card c-goal">
-        <header class="card-head"><span class="ico">🎯</span><h3>목표 진행률</h3></header>
-        <div id="goal-body" class="goals"></div>
+      <article class="card c-edu">
+        <header class="card-head">
+          <span class="ico">📚</span><h3>교육·참석요청 메일</h3>
+          <button id="edu-open" type="button" class="ghost small" style="margin-left:auto">교육 현황 →</button>
+        </header>
+        <div id="dash-edu-body" class="edu-sum"></div>
       </article>
+      <article class="card c-quick">
+        <header class="card-head"><span class="ico">⚡</span><h3>바로가기</h3></header>
+        <div id="quick-body" class="shortcuts"></div>
+      </article>
+
+      <article class="card c-exp">
+        <header class="card-head">
+          <span class="ico">⏰</span><h3>곧 만료되는 항목</h3>
+          <span class="muted small">60일 이내</span>
+          <button id="exp-open" type="button" class="ghost small" style="margin-left:auto">전체 보기 →</button>
+        </header>
+        <ul id="dash-exp-list" class="mini-list"></ul>
+      </article>
+
       <article class="card c-status">
         <header class="card-head">
           <span class="ico">🚀</span><h3>긴급·중요 일정 현황</h3>
@@ -114,20 +129,6 @@
         <ul id="status-list" class="status-list"></ul>
       </article>
 
-      <article class="card c-notes">
-        <header class="card-head"><span class="ico">💡</span><h3>빠른 메모</h3></header>
-        <ul id="note-list" class="notes"></ul>
-        <form id="note-form" class="note-form" autocomplete="off">
-          <input name="body" placeholder="+ 새로 만들기 (Enter)" maxlength="500">
-        </form>
-      </article>
-      <article class="card c-activity">
-        <header class="card-head">
-          <span class="ico">🕘</span><h3>최근 활동 기록</h3>
-          <span class="muted small">변경자 · 변경 내용</span>
-        </header>
-        <ul id="activity-list" class="activity"></ul>
-      </article>
 
     </div>
   </section>
@@ -137,6 +138,7 @@
       <h2>교육 현황</h2>
       <span class="muted small" id="edu-asof"></span>
       <div class="spacer"></div>
+      <button type="button" class="btn hidden" id="edu-remind">📣 미이수자 안내 메일</button>
       <button type="button" class="btn hidden" id="edu-mail">✉️ 참석요청 메일</button>
       <button type="button" class="btn" id="edu-export">📥 정리본 엑셀 내보내기</button>
       <button type="button" class="btn primary hidden" id="edu-import">📤 교육계획 엑셀 업로드</button>
@@ -156,19 +158,54 @@
     <div id="edu-chart" class="edu-chart"></div>
     <div id="edu-body" class="edu-body"></div>
   </section>
+  <section id="board-view" class="edu-view hidden">
+    <header class="cal-head">
+      <h2>업무 보드</h2>
+      <span class="muted small">카드를 끌어서 다른 칸에 놓으면 진행 중 · 종료 · 취소로 바뀝니다</span>
+      <div class="spacer"></div>
+      <button type="button" class="btn" id="board-prev" aria-label="이전 달">◀</button>
+      <b id="board-title" class="board-title"></b>
+      <button type="button" class="btn" id="board-next" aria-label="다음 달">▶</button>
+      <button type="button" class="btn" id="board-now">이번 달</button>
+    </header>
+    <div class="filters">
+      <label class="fchip"><input type="checkbox" id="board-urgent"><span>🔥 긴급만</span></label>
+    </div>
+    <div id="board-body" class="kb"></div>
+  </section>
+
+  <section id="exp-view" class="edu-view hidden">
+    <header class="cal-head">
+      <h2>만료일 관리</h2>
+      <span class="muted small" id="exp-asof">계약·보험·점검처럼 기한이 있는 항목을 관리하고, 만료 전에 알려 드립니다</span>
+      <div class="spacer"></div>
+      <button type="button" class="btn primary hidden" id="exp-add">+ 항목 추가</button>
+    </header>
+    <div id="exp-kpi" class="kpis"></div>
+    <div class="filters">
+      <select id="exp-cat" aria-label="구분"><option value="">전체 구분</option></select>
+      <input id="exp-q" class="edu-q" placeholder="🔍 항목 · 담당 검색">
+    </div>
+    <div id="exp-body" class="edu-body"></div>
+  </section>
+
+  <section id="tpl-view" class="edu-view hidden">
+    <header class="cal-head">
+      <h2>업무 템플릿</h2>
+      <span class="muted small">정해진 절차를 템플릿으로 저장해 두고, 기준일만 정하면 일정(체크리스트)으로 한 번에 만듭니다</span>
+      <div class="spacer"></div>
+      <button type="button" class="btn primary" id="tpl-add">+ 새 템플릿</button>
+    </header>
+    <div id="tpl-body" class="tpl-grid"></div>
+  </section>
+
   <section id="cal-view" class="cal-view hidden">
     <header class="cal-head">
-      <h2>통합 일정관리</h2>
+      <h2>내 캘린더</h2>
       <div class="spacer"></div>
       <button type="button" class="btn primary" id="btn-new">+ 일정 등록</button>
     </header>
     <div class="filters">
-      <select id="flt-site" aria-label="공장"><option value="">전체 공장</option></select>
-      <select id="flt-dept" aria-label="팀"><option value="">전체 팀</option></select>
-      <select id="flt-member" aria-label="구성원"><option value="">전체 구성원</option></select>
-      <span class="fsep"></span>
-      <label class="fchip"><input type="checkbox" id="chk-personal" checked><span>개인 일정</span></label>
-      <label class="fchip"><input type="checkbox" id="chk-team" checked><span>팀 일정</span></label>
       <label class="fchip"><input type="checkbox" id="flt-urgent"><span>🔥 긴급만</span></label>
       <label class="fchip"><input type="checkbox" id="flt-important"><span>⭐ 중요만</span></label>
       <label class="fchip"><input type="checkbox" id="flt-closed"><span>종료·취소 숨기기</span></label>
@@ -191,8 +228,6 @@
           <button type="button" class="btn primary" id="list-add">+ 일정 추가</button>
         </div>
         <div id="list-body"></div>
-        <h3 class="mem-title">구성원 일정 보기</h3>
-        <div id="member-list" class="members"></div>
       </aside>
     </div>
   </section>
@@ -214,7 +249,7 @@
       </div>
       <label>제목<input name="title" required maxlength="200"></label>
       <div class="row">
-        <label>일정 종류
+        <label class="team-off">일정 종류
           <select name="kind">
             <option value="personal">👤 개인 일정</option>
             <option value="team">👥 팀 일정</option>
@@ -226,7 +261,7 @@
           </select>
         </label>
       </div>
-      <div class="row">
+      <div class="row team-off">
         <label>공개 범위
           <select name="visibility">
             <option value="team">전체 공개 (모든 팀원)</option>
@@ -242,7 +277,7 @@
           </select>
         </label>
       </div>
-      <p class="muted small" id="perm-hint"></p>
+      <p class="muted small team-off" id="perm-hint"></p>
       <div class="row prio">
         <label class="inline chk urgent"><input type="checkbox" name="urgent"> 🔥 긴급</label>
         <label>중요도
@@ -260,14 +295,14 @@
       </div>
       <div id="conflict-box" class="conflict hidden"></div>
       <div class="row">
-        <label>담당자
+        <label class="team-off">담당자
           <select name="assignee_id"><option value="">지정 안 함</option></select>
         </label>
         <label>장소<input name="location" maxlength="200"></label>
       </div>
       <label>상세 내용<textarea name="memo" rows="3"></textarea></label>
 
-      <fieldset>
+      <fieldset class="team-off">
         <legend>참석자 초대</legend>
         <div id="attendee-list" class="chips"></div>
         <div id="attendance" class="attendance hidden"></div>
@@ -339,6 +374,8 @@
     </div>
     <footer class="dlg-foot">
       <button type="button" class="btn danger" id="btn-delete">삭제</button>
+      <button type="button" class="btn hidden" id="btn-copy" title="이 일정을 복사해서 새 일정으로 만듭니다">복제</button>
+      <button type="button" class="btn hidden" id="btn-link" title="이 일정으로 바로 열리는 링크를 복사합니다">🔗 링크 복사</button>
       <div class="spacer"></div>
       <button type="button" class="btn" id="btn-cancel">닫기</button>
       <button type="submit" class="btn primary" id="btn-save">저장</button>
@@ -464,19 +501,19 @@
       <label>종료일<input name="to" type="date"></label>
     </div>
     <div class="row">
-      <label>일정 종류
+      <label class="team-off">일정 종류
         <select name="kind"><option value="">전체</option><option value="personal">개인 일정</option><option value="team">팀 일정</option></select>
       </label>
       <label>분류
         <select name="category"><option value="">전체</option><option>회의</option><option>외근</option><option>출장</option><option>휴가</option><option>교육</option><option>기타</option></select>
       </label>
     </div>
-    <div class="row">
+    <div class="row team-off">
       <label>담당자<select name="assignee" data-users><option value="">전체</option></select></label>
       <label>참석자<select name="attendee" data-users><option value="">전체</option></select></label>
     </div>
     <div class="row">
-      <label>등록자<select name="owner" data-users><option value="">전체</option></select></label>
+      <label class="team-off">등록자<select name="owner" data-users><option value="">전체</option></select></label>
       <label>상태
         <select name="status"><option value="">전체</option><option value="active">진행 중</option><option value="done">종료</option><option value="cancelled">취소</option></select>
       </label>
@@ -509,18 +546,123 @@
   <form id="settings-form" class="dlg-body" method="dialog">
     <b>내 정보</b>
     <p class="muted small" id="settings-who"></p>
-    <div class="row">
-      <label>공장<input name="site" maxlength="30" placeholder="예) 미산"></label>
-      <label>팀<input name="dept" maxlength="30" placeholder="예) 인사총무"></label>
+    <div class="static-only" id="static-settings">
+      <label>이름 (인사말에 표시됩니다)<input id="static-name" maxlength="30" placeholder="예: 최여선"></label>
+      <b>데이터 저장 (GitHub)</b>
+      <p class="muted small">이 브라우저에 자동으로 저장됩니다. 기기 간에 맞추거나 백업하려면 아래에 <b>비공개(private) 저장소</b>를 연결하세요. 공개 저장소에 연결하면 일정이 누구에게나 보입니다.</p>
+      <div class="row">
+        <label>저장소 주인(계정)<input id="sync-owner" placeholder="예: yeoseonchoi" autocomplete="off"></label>
+        <label>저장소 이름<input id="sync-repo" placeholder="예: calendar-data" autocomplete="off"></label>
+      </div>
+      <div class="row">
+        <label>파일 경로<input id="sync-path" placeholder="calendar-data.json" autocomplete="off"></label>
+        <label>브랜치 (비우면 기본)<input id="sync-branch" placeholder="main" autocomplete="off"></label>
+      </div>
+      <label>토큰 (이 저장소 하나에만 "Contents: 읽기·쓰기" 권한)<input id="sync-token" type="password" placeholder="github_pat_…" autocomplete="off"></label>
+      <div class="dlg-foot nopad">
+        <button type="button" class="btn primary" id="sync-save">연결하고 동기화</button>
+        <button type="button" class="btn" id="sync-now">지금 동기화</button>
+        <button type="button" class="btn danger" id="sync-off">연결 해제</button>
+      </div>
+      <p class="muted small" id="sync-status"></p>
+      <div class="dlg-foot nopad">
+        <button type="button" class="btn" id="static-notify">🔔 브라우저 알림 허용</button>
+        <button type="button" class="btn" id="static-backup">💾 백업 파일 내려받기</button>
+        <button type="button" class="btn" id="static-restore">📂 백업 파일 불러오기</button>
+      </div>
+      <input type="file" id="static-restore-file" accept="application/json,.json" class="hidden">
     </div>
-    <label>직책<input name="position" maxlength="30" placeholder="예) 선임, 팀장"></label>
-    <p class="muted small">공장·팀·직책은 통합 일정관리의 공장/팀/구성원 필터와 일정 표시에 사용됩니다.</p>
+    <button type="button" class="btn" id="mood-again">🎭 오늘의 기분 다시 고르기</button>
+    <b>테마 색상 (직접 고르기)</b>
+    <div class="themes" id="theme-list">
+      <button type="button" data-theme="lavender" style="--a:#7a6cf0;--b:#c4b5fd"><i></i>라벤더</button>
+      <button type="button" data-theme="mint" style="--a:#0f9d8a;--b:#7fe0cf"><i></i>민트</button>
+      <button type="button" data-theme="coral" style="--a:#f06454;--b:#ffb7a8"><i></i>코랄</button>
+      <button type="button" data-theme="sunny" style="--a:#e8850a;--b:#fcd98a"><i></i>옐로</button>
+      <button type="button" data-theme="sky" style="--a:#2f80ed;--b:#9fd0fb"><i></i>스카이</button>
+      <button type="button" data-theme="rose" style="--a:#de5589;--b:#f9b8d0"><i></i>로즈</button>
+      <button type="button" data-theme="ruby" style="--a:#d6334a;--b:#f6a3ad"><i></i>레드</button>
+    </div>
     <div class="dlg-foot nopad">
       <button type="button" class="btn" id="btn-pw">🔑 비밀번호 변경</button>
-      <div class="spacer"></div>
-      <button type="submit" class="btn primary">저장</button>
     </div>
     <p class="muted small" id="mail-warn"></p>
+  </form>
+</dialog>
+
+<!-- 오늘의 기분 -->
+<dialog id="mood-dialog" class="mood">
+  <div class="mood-box">
+    <h3>오늘 기분은 어때요?</h3>
+    <p class="muted">고른 기분에 맞는 색으로 화면을 꾸며 드려요.</p>
+    <div class="mood-grid" id="mood-grid"></div>
+    <button type="button" class="link" id="mood-skip">지금은 건너뛰기</button>
+  </div>
+</dialog>
+
+<!-- 만료 항목 입력 (관리자) -->
+<dialog id="exp-dialog">
+  <form id="exp-form" class="dlg-body" autocomplete="off">
+    <h3 id="exp-dlg-title">만료 항목</h3>
+    <div class="row">
+      <label>구분<select name="category" id="exp-category"></select></label>
+      <label>항목 이름<input name="name" required maxlength="100" placeholder="예: 공장 화재보험"></label>
+    </div>
+    <div class="row">
+      <label>만료일<input name="expire_date" type="date" required></label>
+      <label>담당<input name="owner" maxlength="40" placeholder="예: 홍길동"></label>
+    </div>
+    <label>알림 시점 (만료 며칠 전, 쉼표로 구분)<input name="alert_days" value="60,30,7" placeholder="60,30,7"></label>
+    <label>메모<input name="memo" maxlength="500"></label>
+    <p class="muted small">만료일을 갱신(새 날짜로 수정)하면 다음 만료 전에 알림이 다시 갑니다. 알림은 앱 알림과 메일(설정한 경우)로 관리자에게 갑니다.</p>
+    <p class="error" id="exp-error"></p>
+    <div class="dlg-foot nopad">
+      <button type="button" class="btn danger hidden" id="exp-del">삭제</button>
+      <div class="spacer"></div>
+      <button type="button" class="btn" id="exp-cancel">취소</button>
+      <button type="submit" class="btn primary">저장</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 업무 템플릿 편집 -->
+<dialog id="tpl-dialog">
+  <form id="tpl-form" class="dlg-body" autocomplete="off">
+    <h3 id="tpl-dlg-title">템플릿</h3>
+    <label>템플릿 이름<input name="name" required maxlength="40" placeholder="예: 월말 마감"></label>
+    <p class="muted small">기준일을 정해 적용하면 "기준일로부터 N일" 날짜에 일정이 만들어집니다. 음수는 기준일 이전입니다. (예: 마감 5일 전 → -5)</p>
+    <div id="tpl-rows" class="tpl-rows"></div>
+    <button type="button" class="btn" id="tpl-row-add">+ 할 일 추가</button>
+    <p class="error" id="tpl-error"></p>
+    <div class="dlg-foot nopad">
+      <div class="spacer"></div>
+      <button type="button" class="btn" id="tpl-cancel">취소</button>
+      <button type="submit" class="btn primary">저장</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 업무 템플릿 적용 -->
+<dialog id="tplapply-dialog">
+  <form id="tplapply-form" class="dlg-body">
+    <h3 id="tplapply-title">템플릿 적용</h3>
+    <div class="row">
+      <label>기준일<input name="base" type="date" required></label>
+      <label class="team-off">등록 방식
+        <select name="mode">
+          <option value="personal-me">개인 일정 (나만 보기)</option>
+          <option value="personal-team">개인 일정 (전체 공개)</option>
+          <option value="team">팀 일정 (전체 공개)</option>
+        </select>
+      </label>
+    </div>
+    <ul id="tplapply-list" class="files"></ul>
+    <p class="error" id="tplapply-error"></p>
+    <div class="dlg-foot nopad">
+      <div class="spacer"></div>
+      <button type="button" class="btn" id="tplapply-cancel">취소</button>
+      <button type="submit" class="btn primary" id="tplapply-go">일정으로 등록</button>
+    </div>
   </form>
 </dialog>
 
@@ -538,18 +680,6 @@
       <button type="submit" class="btn primary">변경</button>
     </div>
   </form>
-</dialog>
-
-<!-- 팀원 관리 (관리자) -->
-<dialog id="admin-dialog">
-  <header class="dlg-head">
-    <h3>팀원 관리</h3>
-    <button type="button" class="icon" id="admin-close" aria-label="닫기">✕</button>
-  </header>
-  <div class="dlg-body">
-    <ul id="admin-list" class="files"></ul>
-    <p class="muted small">비밀번호 재설정 시 임시 비밀번호가 발급되며 해당 팀원은 로그아웃됩니다. 팀원을 삭제하면 그 팀원이 등록한 일정과 첨부파일도 함께 삭제됩니다.</p>
-  </div>
 </dialog>
 
 <!-- 반복 일정 범위 선택 -->
@@ -582,7 +712,7 @@
     <span>~</span>
     <input name="et" type="time" value="10:00" aria-label="종료 시간">
   </div>
-  <select name="mode" aria-label="일정 종류와 공개 범위">
+  <select name="mode" class="team-off" aria-label="일정 종류와 공개 범위">
     <option value="personal-me">👤 개인 일정 (나만 보기)</option>
     <option value="personal-team">👤 개인 일정 (전체 공개)</option>
     <option value="team">👥 팀 일정 (전체 공개)</option>
@@ -596,8 +726,10 @@
 
 <div id="toast" class="toast hidden"></div>
 
+<!--STATIC-HEAD-->
 <script src="/vendor/fc/index.global.min.js"></script>
 <script src="/vendor/fc-locales/ko.global.min.js"></script>
 <script src="/app.js"></script>
+<!--STATIC-TAIL-->
 </body>
 </html>

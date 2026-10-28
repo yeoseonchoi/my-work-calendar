@@ -6,6 +6,7 @@ import { expand, floatingNow, DAY } from './recur.js';
 import { sendMail } from './mailer.js';
 import { pushNote, addHistory } from './notify.js';
 import { trainingMailTick } from './training-mail.js';
+import { expirationTick } from './expirations.js';
 
 const MIN = 60000;
 
@@ -135,6 +136,7 @@ export async function runScheduledJobs() {
   };
   result.autoDone = await step('자동 종료', () => autoComplete(now));
   await step('교육 메일', () => trainingMailTick(now));
+  await step('만료일 알림', () => expirationTick(now));
   result.alarms = await step('시작 전 알람', () => sendAlarms(now));
   return result;
 }
