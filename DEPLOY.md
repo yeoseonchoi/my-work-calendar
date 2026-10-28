@@ -23,10 +23,10 @@ Vercel 은 서버의 디스크가 영구 저장되지 않고 서버가 계속 �
    - **Token**: "Generate Token" 으로 발급 (읽기/쓰기 권한)
 
 ## 2. 코드를 GitHub 에 올리기
-```
-cd work-calendar
-git push -u origin main
-```
+코드는 `https://github.com/yeoseonchoi/my-work-calendar` 에 올라가 있습니다. (수정한 뒤에는 `git add .` → `git commit` → `git push`)
+
+> ⚠️ **먼저 확인**: 이 저장소의 GitHub Pages 설정이 **`main` 브랜치의 `/docs` 폴더**여야 합니다. (Settings → Pages)
+> 저장소 **루트**에 브라우저용 `app.js` 가 있으면 Vercel 이 그 파일을 서버 진입점으로 오해해 배포가 실패합니다. 루트에는 서버 코드(`server.js` 등)만 두세요.
 
 ## 3. Vercel 에 프로젝트 만들기
 1. https://vercel.com 에서 GitHub 로 가입 → **Add New… → Project** → `work-calendar` 저장소 **Import**.
@@ -77,6 +77,22 @@ node scripts/migrate-to-turso.mjs
 계정, 일정, 교육 현황, 설정, 첨부파일이 그대로 옮겨지고, 모두 새로 로그인해야 합니다.
 
 ---
+
+## 교육 현황 · 참석요청 메일 · 알림 메일을 쓰려면 (메일 설정)
+Vercel 은 사내 메일 서버(`mail.ds-al.com`, 25번 포트)에 접속하지 못할 가능성이 큽니다. **외부 SMTP** 를 쓰세요. 예) Gmail:
+
+| 이름 | 값 |
+|---|---|
+| `SMTP_HOST` | `smtp.gmail.com` |
+| `SMTP_PORT` | `587` |
+| `SMTP_SECURE` | `false` |
+| `SMTP_USER` | Gmail 주소 |
+| `SMTP_PASS` | **앱 비밀번호** (Google 계정 → 보안 → 2단계 인증 → 앱 비밀번호) |
+| `SMTP_FROM` | `최여선 <Gmail주소>` (보내는 주소는 SMTP 계정과 같아야 합니다) |
+
+- 보낸 메일의 사본(숨은참조)은 `SMTP_USER` 주소의 **받은메일함**에 도착합니다.
+- 설정 뒤 앱의 교육 현황 → ✉️ 참석요청 메일 → **테스트 메일** 로 먼저 확인하세요.
+- 자동 발송·시작 전 알람·만료일 알림은 6단계의 **5분마다 호출** 이 있어야 제때 나갑니다.
 
 ## 알아둘 제한
 - **첨부파일은 파일당 4MB** 까지 (Vercel 요청 크기 제한 4.5MB).

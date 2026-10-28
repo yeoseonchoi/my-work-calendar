@@ -45,7 +45,8 @@ if (existing > 0 && !args.force) {
 // 부모 → 자식 순서. sessions, login_attempts 는 옮기지 않는다 (모두 다시 로그인)
 const TABLES = [
   'users', 'events', 'exceptions', 'attendees', 'alarms', 'alarm_sent', 'attachments', 'notifications', 'comments', 'history',
-  'notes', 'trainings', 'app_settings', 'trainee_emails', 'training_mail_log', 'auto_done',
+  'notes', 'trainings', 'app_settings', 'trainee_emails', 'training_mail_log', 'training_remind_log', 'auto_done',
+  'expirations', 'expiration_alerts', 'templates',
 ];
 
 if (existing > 0) {
@@ -94,6 +95,26 @@ if (atts.length) {
       moved++;
     }
     console.log(`\n첨부파일 ${moved}/${atts.length}개를 Blob 으로 옮겼습니다.`);
+  }
+}
+// 교육 수료증 파일도 같은 방식으로 옮긴다
+const certs = await db.prepare("SELECT id, cert_name, cert_stored FROM trainings WHERE cert_stored != '' AND cert_stored NOT LIKE 'blob:%'").all();
+if (certs.length) {
+  if (!useBlob) {
+    console.log(`\n교육 수료증 ${certs.length}개는 BLOB_READ_WRITE_TOKEN 이 없어 옮기지 못했습니다. 토큰을 넣고 --force 로 다시 실행하거나, 수료증은 새로 첨부해 주세요.`);
+  } else {
+    let moved = 0;
+    for (const c of certs) {
+      const p = path.join(process.env.DATA_DIR || path.join(root, 'data'), 'uploads', c.cert_stored);
+      if (!fs.existsSync(p)) {
+        console.log(`  (파일 없음) 수료증 ${c.cert_name}`);
+        continue;
+      }
+      const stored = await saveFile(fs.readFileSync(p), c.cert_name || '수료증', 'application/octet-stream');
+      await db.prepare('UPDATE trainings SET cert_stored = ? WHERE id = ?').run(stored, c.id);
+      moved++;
+    }
+    console.log(`교육 수료증 ${moved}/${certs.length}개를 Blob 으로 옮겼습니다.`);
   }
 }
 console.log(`\n완료: 총 ${total}건을 옮겼습니다. 이제 모두 새로 로그인해야 합니다.`);

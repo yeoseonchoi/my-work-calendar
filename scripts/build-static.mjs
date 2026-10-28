@@ -32,11 +32,11 @@ fs.writeFileSync(path.join(out, 'index.html'), html);
 // 4) GitHub Pages 가 파일을 그대로 서비스하도록
 fs.writeFileSync(path.join(out, '.nojekyll'), '');
 
-// 5) my-work-calendar 저장소는 Pages 를 "저장소 루트"에서 서비스하므로, 루트에도 같은 파일을 둔다.
-//    (Pages 설정을 "/docs" 폴더로 바꾸면 이 단계와 루트의 복사본은 필요 없다)
-if (process.argv.includes('--no-root') === false) {
+// 5) (선택) GitHub Pages 를 "저장소 루트"에서 서비스하는 경우에만 --root 를 붙인다.
+//    주의: 루트에 app.js 가 생기면 Vercel 이 서버 진입점으로 오해하므로, Vercel 배포를 쓴다면 Pages 는 "/docs" 폴더로 설정하고 이 옵션을 쓰지 않는다.
+if (process.argv.includes('--root')) {
   for (const e of fs.readdirSync(out, { withFileTypes: true })) fs.cpSync(path.join(out, e.name), path.join(root, e.name), { recursive: true });
-  console.log('루트에도 사이트 파일을 복사했습니다. (끄려면 --no-root)');
+  console.log('루트에도 사이트 파일을 복사했습니다. (--root)');
 }
 
 const files = [];

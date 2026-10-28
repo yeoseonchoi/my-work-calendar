@@ -71,3 +71,5 @@ git add docs
 git commit -m "HTML 버전 갱신"
 git push
 ```
+Pages 는 반드시 **`/docs` 폴더**에서 서비스하도록 설정하세요. 저장소 루트에 `app.js` 같은 브라우저용 파일을 두면 Vercel 배포(서버 버전)와 충돌합니다.
+(루트에서 서비스해야 하는 사정이 있을 때만 `npm run build:static -- --root` 를 쓰되, Vercel 배포와는 함께 쓸 수 없습니다.)
